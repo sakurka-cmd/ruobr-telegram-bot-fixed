@@ -24,7 +24,7 @@ from .cache import (
 __all__ = [
     "RuobrClient",
     "Child",
-    "FoodInfo", 
+    "FoodInfo",
     "Lesson",
     "RuobrError",
     "AuthenticationError",

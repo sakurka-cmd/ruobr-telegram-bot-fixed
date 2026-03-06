@@ -15,7 +15,8 @@ from ..database import (
     get_all_thresholds_for_chat,
     is_notification_sent,
     mark_notification_sent,
-    cleanup_old_notifications
+    cleanup_old_notifications,
+    UserConfig
 )
 from ..services import (
     get_children_async,
@@ -41,7 +42,7 @@ class NotificationService:
         self._running = False
         self._prev_balances: Dict[int, Dict[int, float]] = {}
         self._prev_marks: Dict[int, Set[str]] = {}
-        self._prev_food_visits: Dict[int, Set[str]] = {}  # Для отслеживания питания
+        self._prev_food_visits: Dict[int, Set[str]] = {}
     
     async def start(self) -> None:
         """Запуск фонового мониторинга."""
@@ -54,9 +55,7 @@ class NotificationService:
             except Exception as e:
                 logger.error(f"Error in notification loop: {e}", exc_info=True)
             
-            # Периодическая очистка старых записей
             await cleanup_old_notifications(days=30)
-            
             await asyncio.sleep(config.check_interval_seconds)
     
     def stop(self) -> None:
@@ -74,10 +73,9 @@ class NotificationService:
         
         logger.info(f"Checking notifications for {len(users)} users")
         
-        # Обрабатываем пользователей параллельно с ограничением
-        semaphore = asyncio.Semaphore(5)  # Максимум 5 параллельных запросов
+        semaphore = asyncio.Semaphore(5)
         
-        async def process_with_limit(user):
+        async def process_with_limit(user: UserConfig):
             async with semaphore:
                 try:
                     await self._process_user(user)
@@ -87,7 +85,7 @@ class NotificationService:
         tasks = [process_with_limit(user) for user in users]
         await asyncio.gather(*tasks, return_exceptions=True)
     
-    async def _process_user(self, user) -> None:
+    async def _process_user(self, user: UserConfig) -> None:
         """Обработка уведомлений для одного пользователя."""
         if not user.login or not user.password:
             return
@@ -101,36 +99,37 @@ class NotificationService:
         if not children:
             return
         
-        # Проверяем уведомления о балансе
+        # Уведомления о балансе (только когда ниже порога)
         if user.enabled:
-            await self._check_balance_notifications(user.chat_id, user.login, user.password, children)
+            await self._check_balance_notifications(user, children)
         
-        # Проверяем уведомления об оценках
+        # Уведомления об оценках
         if user.marks_enabled:
-            await self._check_marks_notifications(user.chat_id, user.login, user.password, children)
+            await self._check_marks_notifications(user, children)
         
-        # Проверяем уведомления о питании
-        if hasattr(user, 'food_enabled') and user.food_enabled:
-            await self._check_food_notifications(user.chat_id, user.login, user.password, children)
+        # Уведомления о питании
+        if user.food_enabled:
+            await self._check_food_notifications(user, children)
     
     async def _check_balance_notifications(
         self,
-        chat_id: int,
-        login: str,
-        password: str,
+        user: UserConfig,
         children: List[Child]
     ) -> None:
-        """Проверка и отправка уведомлений о балансе."""
+        """
+        Проверка и отправка уведомлений о балансе.
+        Уведомление приходит ТОЛЬКО когда баланс упал ниже порога.
+        """
         try:
-            food_info = await get_food_for_children(login, password, children)
-            thresholds = await get_all_thresholds_for_chat(chat_id)
+            food_info = await get_food_for_children(user.login, user.password, children)
+            thresholds = await get_all_thresholds_for_chat(user.chat_id)
             
             alerts = []
             new_balances: Dict[int, float] = {}
             
             for child in children:
                 info = food_info.get(child.id)
-                if not info or not info.has_food:
+                if not info:
                     new_balances[child.id] = 0.0
                     continue
                 
@@ -138,61 +137,48 @@ class NotificationService:
                 new_balances[child.id] = balance
                 
                 threshold = thresholds.get(child.id, config.default_balance_threshold)
-                prev_balance = self._prev_balances.get(chat_id, {}).get(child.id)
+                prev_balance = self._prev_balances.get(user.chat_id, {}).get(child.id)
                 
-                should_notify = False
-                reason = ""
-                
-                # Условие 1: Баланс упал ниже порога
+                # Уведомление ТОЛЬКО когда баланс стал ниже порога
+                # (раньше был выше или равен, а теперь ниже)
                 if balance < threshold:
+                    # Проверяем, что это новое падение ниже порога
                     if prev_balance is None or prev_balance >= threshold:
-                        should_notify = True
-                        reason = f"баланс упал ниже порога {threshold:.0f} ₽"
-                
-                # Условие 2: Произошло списание
-                if prev_balance is not None:
-                    delta = balance - prev_balance
-                    if delta < -0.01:  # Списание более 1 копейки
-                        should_notify = True
-                        reason = f"списано {abs(delta):.0f} ₽"
-                
-                if should_notify:
-                    # Проверяем дедупликацию
-                    notif_key = f"balance:{child.id}:{int(balance)}"
-                    if await is_notification_sent(chat_id, "balance", notif_key):
-                        continue
-                    
-                    alerts.append(
-                        f"{child.full_name} ({child.group}):\n"
-                        f"  📉 {reason}\n"
-                        f"  💰 Текущий баланс: <b>{balance:.0f} ₽</b>"
-                    )
-                    
-                    await mark_notification_sent(chat_id, "balance", notif_key)
+                        # Дедупликация - не отправлять повторно для того же баланса
+                        notif_key = f"low_balance:{child.id}:{int(balance)}"
+                        if await is_notification_sent(user.chat_id, "balance", notif_key):
+                            continue
+                        
+                        alerts.append(
+                            f"⚠️ {child.full_name} ({child.group}):\n"
+                            f"  💰 Баланс: <b>{balance:.0f} ₽</b>\n"
+                            f"  📉 Порог: {threshold:.0f} ₽\n"
+                            f"  ❗ Необходимо пополнить счёт!"
+                        )
+                        
+                        await mark_notification_sent(user.chat_id, "balance", notif_key)
             
-            self._prev_balances[chat_id] = new_balances
+            self._prev_balances[user.chat_id] = new_balances
             
             if alerts:
-                text = "⚠️ <b>Уведомление о балансе</b>\n\n" + "\n\n".join(alerts)
-                await self._send_notification(chat_id, text)
+                text = "⚠️ <b>Низкий баланс питания!</b>\n\n" + "\n\n".join(alerts)
+                await self._send_notification(user.chat_id, text)
                 
         except Exception as e:
-            logger.error(f"Error checking balance for user {chat_id}: {e}")
+            logger.error(f"Error checking balance for user {user.chat_id}: {e}")
     
     async def _check_marks_notifications(
         self,
-        chat_id: int,
-        login: str,
-        password: str,
+        user: UserConfig,
         children: List[Child]
     ) -> None:
         """Проверка и отправка уведомлений о новых оценках."""
         try:
             today = date.today()
-            start = today - timedelta(days=self.MARKS_CHECK_DAYS)  # За последние 14 дней
+            start = today - timedelta(days=self.MARKS_CHECK_DAYS)
             
             timetable = await get_timetable_for_children(
-                login, password, children, start, today
+                user.login, user.password, children, start, today
             )
             
             all_marks: List[dict] = []
@@ -211,20 +197,17 @@ class NotificationService:
                             "question_id": mark.get("question_id")
                         })
             
-            # Формируем ключи для сравнения
             new_keys: Set[str] = set()
             for m in all_marks:
                 key = f"{m['date']}|{m['subject']}|{m['question_id']}|{m['value']}"
                 new_keys.add(key)
             
-            prev_keys = self._prev_marks.get(chat_id)
-            self._prev_marks[chat_id] = new_keys
+            prev_keys = self._prev_marks.get(user.chat_id)
+            self._prev_marks[user.chat_id] = new_keys
             
             if prev_keys is None:
-                # Первый запуск, пропускаем
                 return
             
-            # Находим новые оценки
             new_marks = [m for m in all_marks 
                         if f"{m['date']}|{m['subject']}|{m['question_id']}|{m['value']}" not in prev_keys]
             
@@ -239,24 +222,25 @@ class NotificationService:
                     )
                 
                 text = truncate_text("\n".join(lines))
-                await self._send_notification(chat_id, text)
+                await self._send_notification(user.chat_id, text)
                 
         except Exception as e:
-            logger.error(f"Error checking marks for user {chat_id}: {e}")
+            logger.error(f"Error checking marks for user {user.chat_id}: {e}")
     
     async def _check_food_notifications(
         self,
-        chat_id: int,
-        login: str,
-        password: str,
+        user: UserConfig,
         children: List[Child]
     ) -> None:
-        """Проверка и отправка уведомлений о питании (когда ребёнок поел)."""
+        """
+        Проверка и отправка уведомлений о питании.
+        Показывает что поел ребёнок и сколько списано.
+        """
         try:
             today = date.today()
             today_str = today.strftime("%Y-%m-%d")
             
-            food_info = await get_food_for_children(login, password, children)
+            food_info = await get_food_for_children(user.login, user.password, children)
             
             alerts = []
             new_visits: Set[str] = set()
@@ -269,41 +253,55 @@ class NotificationService:
                 for visit in info.visits:
                     visit_date = visit.get("date", "")
                     
-                    # Проверяем только за сегодня
                     if visit_date != today_str:
                         continue
                     
-                    # Проверяем, было ли подтверждённое питание
+                    # Проверяем подтверждённое питание
                     if not visit.get("ordered") and visit.get("state") != 30:
                         continue
                     
-                    # Формируем уникальный ключ визита
-                    visit_key = f"{child.id}:{visit_date}:{visit.get('line', 0)}:{visit.get('price', 0)}"
+                    # Уникальный ключ визита
+                    visit_key = f"{child.id}:{visit_date}:{visit.get('line', 0)}:{visit.get('time_start', '')}"
                     new_visits.add(visit_key)
                     
-                    # Проверяем, новое ли это питание
-                    prev_visits = self._prev_food_visits.get(chat_id, set())
+                    prev_visits = self._prev_food_visits.get(user.chat_id, set())
                     
                     if visit_key not in prev_visits:
                         # Новое питание!
-                        price = visit.get("price", 0)
                         meal_type = visit.get("line_name", "Питание")
                         
-                        alerts.append(
-                            f"🍽 {child.full_name} ({child.group}):\n"
-                            f"  🕐 {meal_type}\n"
-                            f"  💰 Списано: <b>{price:.0f} ₽</b>"
-                        )
+                        # Цена
+                        price_raw = str(visit.get("price_sum") or visit.get("price", "0")).replace(",", ".")
+                        try:
+                            price = float(price_raw)
+                        except ValueError:
+                            price = 0.0
+                        
+                        # Блюда
+                        dishes = visit.get("dishes", [])
+                        dish_names = [d.get("text", "") for d in dishes if d.get("text")]
+                        
+                        # Формируем сообщение
+                        msg_lines = [f"🍽 <b>{child.full_name}</b> ({child.group})"]
+                        msg_lines.append(f"🕐 {meal_type}")
+                        
+                        if dish_names:
+                            msg_lines.append("📋 <b>Меню:</b>")
+                            for dish in dish_names:
+                                msg_lines.append(f"  • {dish}")
+                        
+                        msg_lines.append(f"💰 Списано: <b>{price:.0f} ₽</b>")
+                        
+                        alerts.append("\n".join(msg_lines))
             
-            # Обновляем список визитов
-            self._prev_food_visits[chat_id] = new_visits
+            self._prev_food_visits[user.chat_id] = new_visits
             
             if alerts:
                 text = f"🍽 <b>Ребёнок поел!</b> ({today_str})\n\n" + "\n\n".join(alerts)
-                await self._send_notification(chat_id, text)
+                await self._send_notification(user.chat_id, text)
                 
         except Exception as e:
-            logger.error(f"Error checking food for user {chat_id}: {e}")
+            logger.error(f"Error checking food for user {user.chat_id}: {e}")
     
     async def _send_notification(self, chat_id: int, text: str) -> None:
         """Отправка уведомления пользователю."""
@@ -313,7 +311,6 @@ class NotificationService:
         except TelegramAPIError as e:
             logger.error(f"Failed to send notification to {chat_id}: {e}")
             
-            # Если пользователь заблокировал бота, отключаем уведомления
             if "blocked" in str(e).lower() or "user is deactivated" in str(e).lower():
                 from ..database import create_or_update_user
                 await create_or_update_user(chat_id, enabled=False, marks_enabled=False)
