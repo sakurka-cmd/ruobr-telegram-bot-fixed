@@ -172,9 +172,9 @@ async def cmd_hwtomorrow(message: Message, user_config: Optional[UserConfig] = N
                     hw_text = hw.get("text", "")
                     if has_meaningful_text(hw_text):
                         clean_text = clean_html_text(hw_text)
-                        # Ограничиваем длину текста
-                        if len(clean_text) > 200:
-                            clean_text = clean_text[:197] + "..."
+                        # Ограничиваем длину текста (Telegram limit ~4096 per message)
+                        if len(clean_text) > 500:
+                            clean_text = clean_text[:497] + "..."
                         lines.append(f"     📝 {clean_text}")
                     
                     # Собираем файлы для отправки
