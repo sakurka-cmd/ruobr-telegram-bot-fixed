@@ -231,35 +231,63 @@ async def btn_change_login(message: Message, state: FSMContext):
 
 # ===== Информация =====
 
-@router.message(F.text == "👥 Одноклассники")
-async def btn_classmates(message: Message, user_config: Optional[UserConfig] = None):
-    if user_config is None or not user_config.login:
-        await message.answer("❌ Сначала настройте логин/пароль через /set_login")
-        return
-    
+def get_child_select_keyboard(children, action: str) -> InlineKeyboardMarkup:
+    """Клавиатура выбора ребенка"""
+    buttons = []
+    for i, child in enumerate(children):
+        buttons.append([InlineKeyboardButton(
+            text=f"👤 {child.full_name} ({child.group})",
+            callback_data=f"info_{action}_{i}"
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def get_children_or_select(message: Message, user_config: UserConfig, action: str):
+    """Получить детей или показать выбор"""
+    try:
+        children = await get_children_async(user_config.login, user_config.password)
+        if not children:
+            await message.answer("❌ Дети не найдены.")
+            return None
+        
+        if len(children) == 1:
+            return (children, 0)  # Один ребенок - возвращаем его индекс
+        
+        # Несколько детей - показываем выбор
+        await message.answer(
+            f"👦👧 <b>Выберите ребенка:</b>",
+            reply_markup=get_child_select_keyboard(children, action)
+        )
+        return None  # Ждем callback
+        
+    except Exception as e:
+        logger.error(f"Error getting children: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
+        return None
+
+
+async def show_classmates(message: Message, login: str, password: str, child_index: int, child_name: str):
+    """Показать одноклассников"""
     status_msg = await message.answer("🔄 Загрузка списка одноклассников...")
     
     try:
-        classmates = await get_classmates_for_child(user_config.login, user_config.password, 0)
+        classmates = await get_classmates_for_child(login, password, child_index)
         
         if not classmates:
             await status_msg.edit_text("ℹ️ Одноклассники не найдены.")
             return
         
-        # Сортируем по фамилии
         classmates_sorted = sorted(classmates, key=lambda c: c.last_name)
         
-        lines = [f"👥 <b>Одноклассники</b> ({len(classmates)} человек):\n"]
+        lines = [f"👥 <b>Одноклассники</b> — {child_name} ({len(classmates)} чел.):\n"]
         
         from datetime import datetime
         for i, c in enumerate(classmates_sorted, 1):
-            # Форматируем дату рождения
             if c.birth_date:
                 try:
                     bd = datetime.strptime(c.birth_date, "%Y-%m-%d")
                     bd_str = bd.strftime("%d.%m.%Y")
                     age = datetime.now().year - bd.year
-                    # Корректируем возраст если ДР ещё не было в этом году
                     if (datetime.now().month, datetime.now().day) < (bd.month, bd.day):
                         age -= 1
                 except:
@@ -271,10 +299,8 @@ async def btn_classmates(message: Message, user_config: Optional[UserConfig] = N
             
             lines.append(f"{i:2}. {c.full_name} {c.gender_icon} | {bd_str} ({age} лет)")
         
-        # Разбиваем на части если слишком длинное сообщение
         text = "\n".join(lines)
         if len(text) > 4000:
-            # Отправляем частями
             await status_msg.edit_text(text[:4000])
             remaining = text[4000:]
             while remaining:
@@ -284,30 +310,25 @@ async def btn_classmates(message: Message, user_config: Optional[UserConfig] = N
             await status_msg.edit_text(text)
             
     except Exception as e:
-        logger.error(f"Error getting classmates for user {message.chat.id}: {e}")
-        await status_msg.edit_text(f"❌ Ошибка получения данных: {e}")
+        logger.error(f"Error getting classmates: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
 
 
-@router.message(F.text == "👩‍🏫 Учителя")
-async def btn_teachers(message: Message, user_config: Optional[UserConfig] = None):
-    if user_config is None or not user_config.login:
-        await message.answer("❌ Сначала настройте логин/пароль через /set_login")
-        return
-    
+async def show_teachers(message: Message, login: str, password: str, child_index: int, child_name: str):
+    """Показать учителей"""
     status_msg = await message.answer("🔄 Загрузка списка учителей...")
     
     try:
-        guide = await get_guide_for_child(user_config.login, user_config.password, 0)
+        guide = await get_guide_for_child(login, password, child_index)
         
         if not guide.teachers:
             await status_msg.edit_text("ℹ️ Учителя не найдены.")
             return
         
-        # Разделяем на предметников и других
         subject_teachers = [t for t in guide.teachers if t.subject]
         other_teachers = [t for t in guide.teachers if not t.subject]
         
-        lines = [f"👩‍🏫 <b>Учителя</b>\n"]
+        lines = [f"👩‍🏫 <b>Учителя</b> — {child_name}\n"]
         lines.append(f"<b>Школа:</b> {guide.name}")
         if guide.phone:
             lines.append(f"<b>Телефон:</b> {guide.phone}")
@@ -327,30 +348,25 @@ async def btn_teachers(message: Message, user_config: Optional[UserConfig] = Non
             if len(other_teachers) > 10:
                 lines.append(f"  ... и ещё {len(other_teachers) - 10}")
         
-        text = "\n".join(lines)
-        await status_msg.edit_text(text)
+        await status_msg.edit_text("\n".join(lines))
             
     except Exception as e:
-        logger.error(f"Error getting teachers for user {message.chat.id}: {e}")
-        await status_msg.edit_text(f"❌ Ошибка получения данных: {e}")
+        logger.error(f"Error getting teachers: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
 
 
-@router.message(F.text == "🏆 Достижения")
-async def btn_achievements(message: Message, user_config: Optional[UserConfig] = None):
-    if user_config is None or not user_config.login:
-        await message.answer("❌ Сначала настройте логин/пароль через /set_login")
-        return
-    
+async def show_achievements(message: Message, login: str, password: str, child_index: int, child_name: str):
+    """Показать достижения"""
     status_msg = await message.answer("🔄 Загрузка достижений...")
     
     try:
-        achievements = await get_achievements_for_child(user_config.login, user_config.password, 0)
+        achievements = await get_achievements_for_child(login, password, child_index)
         
-        lines = ["🏆 <b>Достижения</b>\n"]
+        lines = [f"🏆 <b>Достижения</b> — {child_name}\n"]
         
         if achievements.directions:
             total = sum(d.count for d in achievements.directions)
-            lines.append(f"<b>Всего достижений:</b> {total}\n")
+            lines.append(f"<b>Всего:</b> {total}\n")
             
             for d in achievements.directions:
                 bar = "█" * (d.percent // 10) + "░" * (10 - d.percent // 10)
@@ -365,12 +381,90 @@ async def btn_achievements(message: Message, user_config: Optional[UserConfig] =
         if achievements.gto_id:
             lines.append(f"\n🏃 <b>ГТО ID:</b> {achievements.gto_id}")
         
-        text = "\n".join(lines)
-        await status_msg.edit_text(text)
+        await status_msg.edit_text("\n".join(lines))
             
     except Exception as e:
-        logger.error(f"Error getting achievements for user {message.chat.id}: {e}")
-        await status_msg.edit_text(f"❌ Ошибка получения данных: {e}")
+        logger.error(f"Error getting achievements: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
+
+
+@router.message(F.text == "👥 Одноклассники")
+async def btn_classmates(message: Message, user_config: Optional[UserConfig] = None):
+    if user_config is None or not user_config.login:
+        await message.answer("❌ Сначала настройте логин/пароль через /set_login")
+        return
+    
+    result = await get_children_or_select(message, user_config, "classmates")
+    if result:
+        children, idx = result
+        await show_classmates(message, user_config.login, user_config.password, idx, children[idx].full_name)
+
+
+@router.message(F.text == "👩‍🏫 Учителя")
+async def btn_teachers(message: Message, user_config: Optional[UserConfig] = None):
+    if user_config is None or not user_config.login:
+        await message.answer("❌ Сначала настройте логин/пароль через /set_login")
+        return
+    
+    result = await get_children_or_select(message, user_config, "teachers")
+    if result:
+        children, idx = result
+        await show_teachers(message, user_config.login, user_config.password, idx, children[idx].full_name)
+
+
+@router.message(F.text == "🏆 Достижения")
+async def btn_achievements(message: Message, user_config: Optional[UserConfig] = None):
+    if user_config is None or not user_config.login:
+        await message.answer("❌ Сначала настройте логин/пароль через /set_login")
+        return
+    
+    result = await get_children_or_select(message, user_config, "achievements")
+    if result:
+        children, idx = result
+        await show_achievements(message, user_config.login, user_config.password, idx, children[idx].full_name)
+
+
+# Callback handlers для выбора ребенка
+@router.callback_query(F.data.startswith("info_classmates_"))
+async def cb_classmates_select(callback: CallbackQuery, user_config: Optional[UserConfig] = None):
+    if user_config is None or not user_config.login:
+        await callback.answer("❌ Ошибка авторизации")
+        return
+    
+    idx = int(callback.data.split("_")[-1])
+    children = await get_children_async(user_config.login, user_config.password)
+    
+    await callback.message.delete()
+    await show_classmates(callback.message, user_config.login, user_config.password, idx, children[idx].full_name)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("info_teachers_"))
+async def cb_teachers_select(callback: CallbackQuery, user_config: Optional[UserConfig] = None):
+    if user_config is None or not user_config.login:
+        await callback.answer("❌ Ошибка авторизации")
+        return
+    
+    idx = int(callback.data.split("_")[-1])
+    children = await get_children_async(user_config.login, user_config.password)
+    
+    await callback.message.delete()
+    await show_teachers(callback.message, user_config.login, user_config.password, idx, children[idx].full_name)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("info_achievements_"))
+async def cb_achievements_select(callback: CallbackQuery, user_config: Optional[UserConfig] = None):
+    if user_config is None or not user_config.login:
+        await callback.answer("❌ Ошибка авторизации")
+        return
+    
+    idx = int(callback.data.split("_")[-1])
+    children = await get_children_async(user_config.login, user_config.password)
+    
+    await callback.message.delete()
+    await show_achievements(callback.message, user_config.login, user_config.password, idx, children[idx].full_name)
+    await callback.answer()
 
 
 @router.message(F.text == "◀️ Назад")
