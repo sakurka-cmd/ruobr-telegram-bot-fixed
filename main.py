@@ -9,9 +9,11 @@ Ruobr Telegram Bot - Главный файл запуска.
 - Rate limiting
 - Кэшированием
 - Персистентным FSM
+- SOCKS5 прокси
 """
 import asyncio
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -20,6 +22,14 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+
+# Прокси для обхода блокировки Telegram
+try:
+    from aiohttp_socks import ProxyConnector
+    from aiogram.client.session.aiohttp import AiohttpSession
+    SOCKS_SUPPORT = True
+except ImportError:
+    SOCKS_SUPPORT = False
 
 from bot.config import config
 from bot.database import db_pool
@@ -68,11 +78,30 @@ async def main() -> None:
     await db_pool.initialize()
     logger.info("Database initialized")
     
-    # Создание бота и диспетчера
-    bot = Bot(
-        token=config.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
+    # Создание бота с поддержкой прокси
+    proxy_url = os.getenv("BOT_PROXY", "")
+    
+    if proxy_url and SOCKS_SUPPORT:
+        logger.info(f"Using proxy: {proxy_url[:30]}...")
+        connector = ProxyConnector.from_url(proxy_url)
+        from aiogram.client.session.aiohttp import AiohttpSession
+        session = AiohttpSession(connector=connector)
+        bot = Bot(
+            token=config.bot_token,
+            session=session,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        )
+    elif proxy_url and not SOCKS_SUPPORT:
+        logger.warning("Proxy configured but aiohttp-socks not installed!")
+        bot = Bot(
+            token=config.bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        )
+    else:
+        bot = Bot(
+            token=config.bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        )
     
     # Используем MemoryStorage для FSM (можно заменить на RedisStorage)
     storage = MemoryStorage()

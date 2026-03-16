@@ -17,6 +17,7 @@ python-dotenv>=1.0.0
 
 # HTTP Client (for async requests)
 aiohttp>=3.9.0
+aiohttp-socks>=0.8.0
 
 # Optional: Redis for FSM storage and distributed cache
 # redis>=5.0.0
