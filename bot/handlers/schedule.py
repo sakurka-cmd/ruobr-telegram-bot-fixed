@@ -1,6 +1,7 @@
 """
 Обработчики для расписания, ДЗ и оценок.
 """
+import asyncio
 import logging
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -8,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
 
 from ..config import config
 from ..database import UserConfig
@@ -27,6 +28,36 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
+# Таймаут для сетевых операций (секунды)
+NETWORK_TIMEOUT = 30
+
+
+async def safe_edit_message(status_msg: Message, text: str) -> bool:
+    """
+    Безопасное редактирование сообщения с обработкой ошибок.
+    
+    Returns:
+        True если успешно, False если ошибка.
+    """
+    try:
+        await asyncio.wait_for(
+            status_msg.edit_text(text),
+            timeout=NETWORK_TIMEOUT
+        )
+        return True
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout editing message")
+        return False
+    except TelegramNetworkError as e:
+        logger.error(f"Network error editing message: {e}")
+        return False
+    except TelegramAPIError as e:
+        logger.error(f"API error editing message: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error editing message: {e}")
+        return False
+
 
 # ===== Расписание на сегодня =====
 
@@ -44,7 +75,10 @@ async def cmd_ttoday(message: Message, user_config: Optional[UserConfig] = None)
     
     try:
         today = date.today()
-        timetable = await get_timetable_for_children(login, password, children, today, today)
+        timetable = await asyncio.wait_for(
+            get_timetable_for_children(login, password, children, today, today),
+            timeout=NETWORK_TIMEOUT
+        )
         
         lines = [f"📅 <b>Расписание на сегодня</b> ({format_date(str(today))}, {format_weekday(today)})"]
         found = False
@@ -61,14 +95,20 @@ async def cmd_ttoday(message: Message, user_config: Optional[UserConfig] = None)
                 lines.append(format_lesson(lesson, show_details=True))
         
         if not found:
-            await status_msg.edit_text("ℹ️ На сегодня расписание не найдено.")
+            await safe_edit_message(status_msg, "ℹ️ На сегодня расписание не найдено.")
         else:
             text = truncate_text("\n".join(lines))
-            await status_msg.edit_text(text)
+            await safe_edit_message(status_msg, text)
             
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout getting timetable for user {message.chat.id}")
+        await safe_edit_message(status_msg, "⏱ Превышено время ожидания. Попробуйте позже.")
+    except TelegramNetworkError as e:
+        logger.error(f"Network error for user {message.chat.id}: {e}")
+        await safe_edit_message(status_msg, "📡 Ошибка сети. Проверьте подключение.")
     except Exception as e:
         logger.error(f"Error getting timetable for user {message.chat.id}: {e}")
-        await status_msg.edit_text(f"❌ Ошибка получения расписания: {e}")
+        await safe_edit_message(status_msg, f"❌ Ошибка получения расписания: {e}")
 
 
 # ===== Расписание на завтра =====
@@ -87,7 +127,10 @@ async def cmd_ttomorrow(message: Message, user_config: Optional[UserConfig] = No
     
     try:
         tomorrow = date.today() + timedelta(days=1)
-        timetable = await get_timetable_for_children(login, password, children, tomorrow, tomorrow)
+        timetable = await asyncio.wait_for(
+            get_timetable_for_children(login, password, children, tomorrow, tomorrow),
+            timeout=NETWORK_TIMEOUT
+        )
         
         lines = [f"📅 <b>Расписание на завтра</b> ({format_date(str(tomorrow))}, {format_weekday(tomorrow)})"]
         found = False
@@ -104,14 +147,20 @@ async def cmd_ttomorrow(message: Message, user_config: Optional[UserConfig] = No
                 lines.append(format_lesson(lesson, show_details=True))
         
         if not found:
-            await status_msg.edit_text("ℹ️ На завтра расписание не найдено.")
+            await safe_edit_message(status_msg, "ℹ️ На завтра расписание не найдено.")
         else:
             text = truncate_text("\n".join(lines))
-            await status_msg.edit_text(text)
+            await safe_edit_message(status_msg, text)
             
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout getting timetable for user {message.chat.id}")
+        await safe_edit_message(status_msg, "⏱ Превышено время ожидания. Попробуйте позже.")
+    except TelegramNetworkError as e:
+        logger.error(f"Network error for user {message.chat.id}: {e}")
+        await safe_edit_message(status_msg, "📡 Ошибка сети. Проверьте подключение.")
     except Exception as e:
         logger.error(f"Error getting timetable for user {message.chat.id}: {e}")
-        await status_msg.edit_text(f"❌ Ошибка получения расписания: {e}")
+        await safe_edit_message(status_msg, f"❌ Ошибка получения расписания: {e}")
 
 
 # ===== Домашнее задание на завтра =====
@@ -137,7 +186,10 @@ async def cmd_hwtomorrow(message: Message, user_config: Optional[UserConfig] = N
         monday = today - timedelta(days=today.weekday())
         sunday = monday + timedelta(days=6)
         
-        timetable = await get_timetable_for_children(login, password, children, monday, sunday)
+        timetable = await asyncio.wait_for(
+            get_timetable_for_children(login, password, children, monday, sunday),
+            timeout=NETWORK_TIMEOUT
+        )
         
         lines = [f"📘 <b>Домашнее задание на завтра</b> ({format_date(tomorrow_str)})"]
         found = False
@@ -183,33 +235,42 @@ async def cmd_hwtomorrow(message: Message, user_config: Optional[UserConfig] = N
                         all_files.append((file_type, file_url, lesson.subject))
         
         if not found:
-            await status_msg.edit_text("ℹ️ На завтра домашнее задание не найдено.")
+            await safe_edit_message(status_msg, "ℹ️ На завтра домашнее задание не найдено.")
         else:
             text = truncate_text("\n".join(lines))
-            await status_msg.edit_text(text)
+            await safe_edit_message(status_msg, text)
             
             # Отправляем файлы отдельными сообщениями
             if all_files:
                 for file_type, file_url, subject in all_files:
                     try:
                         if file_type == 'img':
-                            await message.answer_photo(
-                                photo=file_url,
-                                caption=f"📎 {subject}"
+                            await asyncio.wait_for(
+                                message.answer_photo(photo=file_url, caption=f"📎 {subject}"),
+                                timeout=NETWORK_TIMEOUT
                             )
                         else:
-                            await message.answer_document(
-                                document=file_url,
-                                caption=f"📎 {subject}"
+                            await asyncio.wait_for(
+                                message.answer_document(document=file_url, caption=f"📎 {subject}"),
+                                timeout=NETWORK_TIMEOUT
                             )
-                    except TelegramAPIError as e:
+                    except (TelegramAPIError, asyncio.TimeoutError) as e:
                         logger.warning(f"Failed to send file {file_url}: {e}")
                         # Если не удалось отправить файл - отправляем ссылку
-                        await message.answer(f"📎 <a href=\"{file_url}\">Файл: {subject}</a>")
+                        try:
+                            await message.answer(f"📎 <a href=\"{file_url}\">Файл: {subject}</a>")
+                        except Exception:
+                            pass
             
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout getting homework for user {message.chat.id}")
+        await safe_edit_message(status_msg, "⏱ Превышено время ожидания. Попробуйте позже.")
+    except TelegramNetworkError as e:
+        logger.error(f"Network error for user {message.chat.id}: {e}")
+        await safe_edit_message(status_msg, "📡 Ошибка сети. Проверьте подключение.")
     except Exception as e:
         logger.error(f"Error getting homework for user {message.chat.id}: {e}")
-        await status_msg.edit_text(f"❌ Ошибка получения ДЗ: {e}")
+        await safe_edit_message(status_msg, f"❌ Ошибка получения ДЗ: {e}")
 
 
 # ===== Оценки за сегодня =====
@@ -230,7 +291,10 @@ async def cmd_markstoday(message: Message, user_config: Optional[UserConfig] = N
         today = date.today()
         today_str = today.strftime("%Y-%m-%d")
         
-        timetable = await get_timetable_for_children(login, password, children, today, today)
+        timetable = await asyncio.wait_for(
+            get_timetable_for_children(login, password, children, today, today),
+            timeout=NETWORK_TIMEOUT
+        )
         
         lines = [f"⭐ <b>Оценки за сегодня</b> ({format_date(today_str)})"]
         found = False
@@ -253,11 +317,17 @@ async def cmd_markstoday(message: Message, user_config: Optional[UserConfig] = N
                     lines.append(f"  {mark_str}")
         
         if not found:
-            await status_msg.edit_text("ℹ️ За сегодня оценок не найдено.")
+            await safe_edit_message(status_msg, "ℹ️ За сегодня оценок не найдено.")
         else:
             text = truncate_text("\n".join(lines))
-            await status_msg.edit_text(text)
+            await safe_edit_message(status_msg, text)
             
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout getting marks for user {message.chat.id}")
+        await safe_edit_message(status_msg, "⏱ Превышено время ожидания. Попробуйте позже.")
+    except TelegramNetworkError as e:
+        logger.error(f"Network error for user {message.chat.id}: {e}")
+        await safe_edit_message(status_msg, "📡 Ошибка сети. Проверьте подключение.")
     except Exception as e:
         logger.error(f"Error getting marks for user {message.chat.id}: {e}")
-        await status_msg.edit_text(f"❌ Ошибка получения оценок: {e}")
+        await safe_edit_message(status_msg, f"❌ Ошибка получения оценок: {e}")
