@@ -12,7 +12,7 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKe
 from ..config import config
 from ..database import get_user, create_or_update_user, UserConfig
 from ..states import LoginStates
-from ..services import get_children_async, AuthenticationError
+from ..services import get_children_async, AuthenticationError, get_classmates_for_child, get_achievements_for_child, get_guide_for_child
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📅 Расписание сегодня"), KeyboardButton(text="📅 Расписание завтра")],
             [KeyboardButton(text="📘 ДЗ на завтра"), KeyboardButton(text="⭐ Оценки сегодня")],
             [KeyboardButton(text="💰 Баланс питания"), KeyboardButton(text="🍽 Питание сегодня")],
-            [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="❓ Помощь")],
+            [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="ℹ️ Информация")],
         ],
         resize_keyboard=True,
         persistent=True
@@ -39,6 +39,17 @@ def get_settings_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="🔑 Изменить логин/пароль"), KeyboardButton(text="💰 Порог баланса")],
             [KeyboardButton(text="🔔 Уведомления"), KeyboardButton(text="👤 Мой профиль")],
+            [KeyboardButton(text="◀️ Назад")],
+        ],
+        resize_keyboard=True
+    )
+
+
+def get_info_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="👥 Одноклассники"), KeyboardButton(text="👩‍🏫 Учителя")],
+            [KeyboardButton(text="🏆 Достижения")],
             [KeyboardButton(text="◀️ Назад")],
         ],
         resize_keyboard=True
@@ -199,15 +210,12 @@ async def cmd_cancel(message: Message, state: FSMContext):
     await message.answer("❌ Операция отменена.", reply_markup=get_main_keyboard())
 
 
-@router.message(F.text == "❓ Помощь")
-async def btn_help(message: Message):
+@router.message(F.text == "ℹ️ Информация")
+async def btn_info(message: Message):
     await message.answer(
-        "📖 <b>Справка по боту</b>\n\n"
-        "<b>🔐 Настройка:</b>\n• /set_login — ввести логин/пароль\n\n"
-        "<b>💰 Питание:</b>\n• /balance — баланс всех детей\n• /foodtoday — что ели сегодня\n\n"
-        "<b>📅 Расписание:</b>\n• /ttoday — расписание сегодня\n• /ttomorrow — расписание завтра\n\n"
-        "<b>📘 ДЗ:</b>\n• /hwtomorrow — ДЗ на завтра\n\n"
-        "<b>⭐ Оценки:</b>\n• /markstoday — оценки за сегодня"
+        "ℹ️ <b>Информация</b>\n\n"
+        "Выберите что хотите узнать:",
+        reply_markup=get_info_keyboard()
     )
 
 
@@ -219,6 +227,150 @@ async def btn_settings(message: Message):
 @router.message(F.text == "🔑 Изменить логин/пароль")
 async def btn_change_login(message: Message, state: FSMContext):
     await cmd_set_login(message, state)
+
+
+# ===== Информация =====
+
+@router.message(F.text == "👥 Одноклассники")
+async def btn_classmates(message: Message, user_config: Optional[UserConfig] = None):
+    if user_config is None or not user_config.login:
+        await message.answer("❌ Сначала настройте логин/пароль через /set_login")
+        return
+    
+    status_msg = await message.answer("🔄 Загрузка списка одноклассников...")
+    
+    try:
+        classmates = await get_classmates_for_child(user_config.login, user_config.password, 0)
+        
+        if not classmates:
+            await status_msg.edit_text("ℹ️ Одноклассники не найдены.")
+            return
+        
+        # Сортируем по фамилии
+        classmates_sorted = sorted(classmates, key=lambda c: c.last_name)
+        
+        lines = [f"👥 <b>Одноклассники</b> ({len(classmates)} человек):\n"]
+        
+        from datetime import datetime
+        for i, c in enumerate(classmates_sorted, 1):
+            # Форматируем дату рождения
+            if c.birth_date:
+                try:
+                    bd = datetime.strptime(c.birth_date, "%Y-%m-%d")
+                    bd_str = bd.strftime("%d.%m.%Y")
+                    age = datetime.now().year - bd.year
+                    # Корректируем возраст если ДР ещё не было в этом году
+                    if (datetime.now().month, datetime.now().day) < (bd.month, bd.day):
+                        age -= 1
+                except:
+                    bd_str = c.birth_date
+                    age = "?"
+            else:
+                bd_str = "?"
+                age = "?"
+            
+            lines.append(f"{i:2}. {c.full_name} {c.gender_icon} | {bd_str} ({age} лет)")
+        
+        # Разбиваем на части если слишком длинное сообщение
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            # Отправляем частями
+            await status_msg.edit_text(text[:4000])
+            remaining = text[4000:]
+            while remaining:
+                await message.answer(remaining[:4000])
+                remaining = remaining[4000:]
+        else:
+            await status_msg.edit_text(text)
+            
+    except Exception as e:
+        logger.error(f"Error getting classmates for user {message.chat.id}: {e}")
+        await status_msg.edit_text(f"❌ Ошибка получения данных: {e}")
+
+
+@router.message(F.text == "👩‍🏫 Учителя")
+async def btn_teachers(message: Message, user_config: Optional[UserConfig] = None):
+    if user_config is None or not user_config.login:
+        await message.answer("❌ Сначала настройте логин/пароль через /set_login")
+        return
+    
+    status_msg = await message.answer("🔄 Загрузка списка учителей...")
+    
+    try:
+        guide = await get_guide_for_child(user_config.login, user_config.password, 0)
+        
+        if not guide.teachers:
+            await status_msg.edit_text("ℹ️ Учителя не найдены.")
+            return
+        
+        # Разделяем на предметников и других
+        subject_teachers = [t for t in guide.teachers if t.subject]
+        other_teachers = [t for t in guide.teachers if not t.subject]
+        
+        lines = [f"👩‍🏫 <b>Учителя</b>\n"]
+        lines.append(f"<b>Школа:</b> {guide.name}")
+        if guide.phone:
+            lines.append(f"<b>Телефон:</b> {guide.phone}")
+        if guide.url:
+            lines.append(f"<b>Сайт:</b> {guide.url}")
+        lines.append("")
+        
+        if subject_teachers:
+            lines.append(f"<b>Предметники ({len(subject_teachers)}):</b>")
+            for t in sorted(subject_teachers, key=lambda x: x.name):
+                lines.append(f"  • {t.name} — {t.subject}")
+        
+        if other_teachers:
+            lines.append(f"\n<b>Другие педагоги ({len(other_teachers)}):</b>")
+            for t in sorted(other_teachers, key=lambda x: x.name)[:10]:
+                lines.append(f"  • {t.name}")
+            if len(other_teachers) > 10:
+                lines.append(f"  ... и ещё {len(other_teachers) - 10}")
+        
+        text = "\n".join(lines)
+        await status_msg.edit_text(text)
+            
+    except Exception as e:
+        logger.error(f"Error getting teachers for user {message.chat.id}: {e}")
+        await status_msg.edit_text(f"❌ Ошибка получения данных: {e}")
+
+
+@router.message(F.text == "🏆 Достижения")
+async def btn_achievements(message: Message, user_config: Optional[UserConfig] = None):
+    if user_config is None or not user_config.login:
+        await message.answer("❌ Сначала настройте логин/пароль через /set_login")
+        return
+    
+    status_msg = await message.answer("🔄 Загрузка достижений...")
+    
+    try:
+        achievements = await get_achievements_for_child(user_config.login, user_config.password, 0)
+        
+        lines = ["🏆 <b>Достижения</b>\n"]
+        
+        if achievements.directions:
+            total = sum(d.count for d in achievements.directions)
+            lines.append(f"<b>Всего достижений:</b> {total}\n")
+            
+            for d in achievements.directions:
+                bar = "█" * (d.percent // 10) + "░" * (10 - d.percent // 10)
+                lines.append(f"📍 {d.direction}")
+                lines.append(f"   {bar} {d.count} ({d.percent}%)")
+        else:
+            lines.append("Достижений пока нет.")
+        
+        if achievements.projects:
+            lines.append(f"\n📝 <b>Проекты:</b> {len(achievements.projects)}")
+        
+        if achievements.gto_id:
+            lines.append(f"\n🏃 <b>ГТО ID:</b> {achievements.gto_id}")
+        
+        text = "\n".join(lines)
+        await status_msg.edit_text(text)
+            
+    except Exception as e:
+        logger.error(f"Error getting achievements for user {message.chat.id}: {e}")
+        await status_msg.edit_text(f"❌ Ошибка получения данных: {e}")
 
 
 @router.message(F.text == "◀️ Назад")

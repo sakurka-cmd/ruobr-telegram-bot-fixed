@@ -116,6 +116,112 @@ class Lesson:
         )
 
 
+@dataclass
+class Classmate:
+    """Информация об однокласснике."""
+    first_name: str
+    last_name: str
+    middle_name: str
+    birth_date: str
+    gender: int  # 1 - мальчик, 2 - девочка
+    avatar: str
+    
+    @property
+    def full_name(self) -> str:
+        return f"{self.last_name} {self.first_name} {self.middle_name}".strip()
+    
+    @property
+    def gender_icon(self) -> str:
+        return "♂" if self.gender == 1 else "♀"
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Classmate':
+        return cls(
+            first_name=data.get("first_name", ""),
+            last_name=data.get("last_name", ""),
+            middle_name=data.get("middle_name", ""),
+            birth_date=data.get("birth_date", ""),
+            gender=data.get("gender", 1),
+            avatar=data.get("avatar", "")
+        )
+
+
+@dataclass
+class AchievementDirection:
+    """Направление достижений."""
+    direction: str
+    count: int
+    percent: int
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'AchievementDirection':
+        return cls(
+            direction=data.get("direction_str", ""),
+            count=data.get("cnt", 0),
+            percent=data.get("percent_int", 0)
+        )
+
+
+@dataclass
+class Achievements:
+    """Достижения ученика."""
+    directions: List[AchievementDirection]
+    projects: List[Dict[str, Any]]
+    gto_id: str
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Achievements':
+        directions = [
+            AchievementDirection.from_dict(d) 
+            for d in data.get("do_direction", [])
+        ]
+        return cls(
+            directions=directions,
+            projects=data.get("project_list", []),
+            gto_id=data.get("gto_id", "")
+        )
+
+
+@dataclass
+class Teacher:
+    """Информация об учителе."""
+    name: str
+    subject: str
+    user_id: int
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Teacher':
+        return cls(
+            name=data.get("person_str", ""),
+            subject=data.get("subject_qs", ""),
+            user_id=data.get("user_id", 0)
+        )
+
+
+@dataclass
+class SchoolGuide:
+    """Информация о школе."""
+    name: str
+    address: str
+    phone: str
+    url: str
+    teachers: List[Teacher]
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'SchoolGuide':
+        teachers = [
+            Teacher.from_dict(t) 
+            for t in data.get("teacher_list", [])
+        ]
+        return cls(
+            name=data.get("name", ""),
+            address=data.get("post_adress", ""),
+            phone=data.get("tel_rec", ""),
+            url=data.get("url", ""),
+            teachers=teachers
+        )
+
+
 class RuobrClient:
     """
     Асинхронный клиент для Ruobr API.
@@ -232,6 +338,12 @@ class RuobrClient:
                     start.strftime("%Y-%m-%d") if isinstance(start, date) else start,
                     end.strftime("%Y-%m-%d") if isinstance(end, date) else end
                 )
+            elif endpoint == "classmates":
+                result = client.get_classmates()
+            elif endpoint == "achievements":
+                result = client.get_achievements()
+            elif endpoint == "guide":
+                result = client.get_guide()
             else:
                 raise RuobrError(f"Unknown endpoint: {endpoint}")
             
@@ -296,6 +408,51 @@ class RuobrClient:
             return []
         
         return [Lesson.from_dict(lesson) for lesson in result]
+    
+    async def get_classmates(self) -> List[Classmate]:
+        """
+        Получение списка одноклассников.
+        
+        Returns:
+            Список объектов Classmate.
+        """
+        result = await self._request_with_retry("GET", "classmates")
+        
+        if not isinstance(result, list):
+            logger.warning(f"Unexpected classmates response type: {type(result)}")
+            return []
+        
+        return [Classmate.from_dict(c) for c in result]
+    
+    async def get_achievements(self) -> Achievements:
+        """
+        Получение достижений.
+        
+        Returns:
+            Объект Achievements.
+        """
+        result = await self._request_with_retry("GET", "achievements")
+        
+        if not isinstance(result, dict):
+            logger.warning(f"Unexpected achievements response type: {type(result)}")
+            return Achievements(directions=[], projects=[], gto_id="")
+        
+        return Achievements.from_dict(result)
+    
+    async def get_guide(self) -> SchoolGuide:
+        """
+        Получение информации о школе.
+        
+        Returns:
+            Объект SchoolGuide.
+        """
+        result = await self._request_with_retry("GET", "guide")
+        
+        if not isinstance(result, dict):
+            logger.warning(f"Unexpected guide response type: {type(result)}")
+            return SchoolGuide(name="", address="", phone="", url="", teachers=[])
+        
+        return SchoolGuide.from_dict(result)
 
 
 async def get_children_async(login: str, password: str) -> List[Child]:
@@ -378,3 +535,66 @@ async def get_timetable_for_children(
             timetable[child_id] = lessons
     
     return timetable
+
+
+async def get_classmates_for_child(
+    login: str,
+    password: str,
+    child_index: int = 0
+) -> List[Classmate]:
+    """
+    Получение списка одноклассников для ребёнка.
+    
+    Args:
+        login: Логин Ruobr.
+        password: Пароль Ruobr.
+        child_index: Индекс ребёнка (0 по умолчанию).
+        
+    Returns:
+        Список объектов Classmate.
+    """
+    async with RuobrClient(login, password) as client:
+        client.set_child(child_index)
+        return await client.get_classmates()
+
+
+async def get_achievements_for_child(
+    login: str,
+    password: str,
+    child_index: int = 0
+) -> Achievements:
+    """
+    Получение достижений для ребёнка.
+    
+    Args:
+        login: Логин Ruobr.
+        password: Пароль Ruobr.
+        child_index: Индекс ребёнка (0 по умолчанию).
+        
+    Returns:
+        Объект Achievements.
+    """
+    async with RuobrClient(login, password) as client:
+        client.set_child(child_index)
+        return await client.get_achievements()
+
+
+async def get_guide_for_child(
+    login: str,
+    password: str,
+    child_index: int = 0
+) -> SchoolGuide:
+    """
+    Получение информации о школе для ребёнка.
+    
+    Args:
+        login: Логин Ruobr.
+        password: Пароль Ruobr.
+        child_index: Индекс ребёнка (0 по умолчанию).
+        
+    Returns:
+        Объект SchoolGuide.
+    """
+    async with RuobrClient(login, password) as client:
+        client.set_child(child_index)
+        return await client.get_guide()
