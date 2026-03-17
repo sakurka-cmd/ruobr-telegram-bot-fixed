@@ -383,12 +383,12 @@ async def show_teachers(message: Message, login: str, password: str, child_index
             # Сортируем по предмету
             teacher_subject_pairs.sort(key=lambda x: x[0])
             
-            lines.append("<pre>Предмет                    | Учитель")
-            lines.append("─" * 50)
+            lines.append("<pre>Предмет                         | Учитель")
+            lines.append("─" * 55)
             for subject, name in teacher_subject_pairs:
-                subject_display = subject[:25].ljust(25)
+                subject_display = subject[:30].ljust(30)
                 lines.append(f"{subject_display} | {name}")
-            lines.append("─" * 50)
+            lines.append("─" * 55)
             lines.append("</pre>")
         else:
             lines.append("Предметники не найдены.")
@@ -676,12 +676,12 @@ async def cb_teachers_select(callback: CallbackQuery, user_config: Optional[User
             # Сортируем по предмету
             teacher_subject_pairs.sort(key=lambda x: x[0])
             
-            lines.append("<pre>Предмет                    | Учитель")
-            lines.append("─" * 50)
+            lines.append("<pre>Предмет                         | Учитель")
+            lines.append("─" * 55)
             for subject, name in teacher_subject_pairs:
-                subject_display = subject[:25].ljust(25)
+                subject_display = subject[:30].ljust(30)
                 lines.append(f"{subject_display} | {name}")
-            lines.append("─" * 50)
+            lines.append("─" * 55)
             lines.append("</pre>")
         else:
             lines.append("Предметники не найдены.")
