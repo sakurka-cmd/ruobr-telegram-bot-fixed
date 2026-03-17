@@ -284,16 +284,14 @@ async def show_classmates(message: Message, login: str, password: str, child_ind
         
         # Если ребёнка нет в списке одноклассников, добавляем его
         if current_child:
-            # Разбираем имя ребенка (формат: "Фамилия Имя Отчество")
-            name_parts = current_child.full_name.split()
             child_as_classmate = type('Classmate', (), {
-                'last_name': name_parts[0] if len(name_parts) > 0 else '',
-                'first_name': name_parts[1] if len(name_parts) > 1 else '',
-                'middle_name': name_parts[2] if len(name_parts) > 2 else '',
-                'birth_date': '',  # Дата рождения неизвестна
-                'gender': 1,  # По умолчанию
+                'last_name': current_child.last_name,
+                'first_name': current_child.first_name,
+                'middle_name': current_child.middle_name,
+                'birth_date': current_child.birth_date,
+                'gender': current_child.gender,
                 'full_name': current_child.full_name,
-                'gender_icon': '👤'  # Свой ребенок
+                'gender_icon': current_child.gender_icon
             })()
             
             # Проверяем, есть ли уже ребенок в списке
@@ -307,10 +305,10 @@ async def show_classmates(message: Message, login: str, password: str, child_ind
         
         from datetime import datetime
         
-        # Формируем таблицу
+        # Формируем таблицу с увеличенной шириной для ФИО
         lines = [f"👥 <b>Классный список</b> — {child_name} ({len(classmates_sorted)} чел.):\n"]
-        lines.append("<pre>№   Фамилия Имя           | Д.р.      | Возр")
-        lines.append("─" * 42)
+        lines.append("<pre>№   Фамилия Имя Отчество          | Д.р.      | Возр")
+        lines.append("─" * 52)
         
         for i, c in enumerate(classmates_sorted, 1):
             if c.birth_date:
@@ -327,15 +325,14 @@ async def show_classmates(message: Message, login: str, password: str, child_ind
                 bd_str = "—"
                 age = "—"
             
-            # Форматируем имя (максимум 20 символов для выравнивания)
-            name_display = c.full_name[:20].ljust(20)
-            icon = getattr(c, 'gender_icon', '👤')
+            # Форматируем имя (30 символов для полного ФИО)
+            name_display = c.full_name[:30].ljust(30)
+            icon = c.gender_icon
             
             lines.append(f"{i:2}. {name_display} {icon} | {bd_str:10} | {age}")
         
-        lines.append("─" * 42)
+        lines.append("─" * 52)
         lines.append("</pre>")
-        lines.append("👤 — ваш ребёнок")
         
         text = "\n".join(lines)
         if len(text) > 4000:
@@ -549,15 +546,14 @@ async def cb_classmates_select(callback: CallbackQuery, user_config: Optional[Us
         
         # Добавляем текущего ребенка в список, если его там нет
         current_child = children[idx]
-        name_parts = current_child.full_name.split()
         child_as_classmate = type('Classmate', (), {
-            'last_name': name_parts[0] if len(name_parts) > 0 else '',
-            'first_name': name_parts[1] if len(name_parts) > 1 else '',
-            'middle_name': name_parts[2] if len(name_parts) > 2 else '',
-            'birth_date': '',
-            'gender': 1,
+            'last_name': current_child.last_name,
+            'first_name': current_child.first_name,
+            'middle_name': current_child.middle_name,
+            'birth_date': current_child.birth_date,
+            'gender': current_child.gender,
             'full_name': current_child.full_name,
-            'gender_icon': '👤'
+            'gender_icon': current_child.gender_icon
         })()
         
         child_in_list = any(c.last_name == child_as_classmate.last_name and 
@@ -570,10 +566,10 @@ async def cb_classmates_select(callback: CallbackQuery, user_config: Optional[Us
         
         from datetime import datetime
         
-        # Формируем таблицу
+        # Формируем таблицу с увеличенной шириной для ФИО
         lines = [f"👥 <b>Классный список</b> — {children[idx].full_name} ({len(classmates_sorted)} чел.):\n"]
-        lines.append("<pre>№   Фамилия Имя           | Д.р.      | Возр")
-        lines.append("─" * 42)
+        lines.append("<pre>№   Фамилия Имя Отчество          | Д.р.      | Возр")
+        lines.append("─" * 52)
         
         for i, c in enumerate(classmates_sorted, 1):
             if c.birth_date:
@@ -590,14 +586,13 @@ async def cb_classmates_select(callback: CallbackQuery, user_config: Optional[Us
                 bd_str = "—"
                 age = "—"
             
-            name_display = c.full_name[:20].ljust(20)
-            icon = getattr(c, 'gender_icon', '👤')
+            name_display = c.full_name[:30].ljust(30)
+            icon = c.gender_icon
             
             lines.append(f"{i:2}. {name_display} {icon} | {bd_str:10} | {age}")
         
-        lines.append("─" * 42)
+        lines.append("─" * 52)
         lines.append("</pre>")
-        lines.append("👤 — ваш ребёнок")
         
         text = "\n".join(lines)
         if len(text) > 4000:

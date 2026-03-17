@@ -48,12 +48,20 @@ class Child:
     id: int
     first_name: str
     last_name: str
+    middle_name: str
+    birth_date: str
+    gender: int
     group: str
     school: str
     
     @property
     def full_name(self) -> str:
-        return f"{self.last_name} {self.first_name}".strip()
+        parts = [self.last_name, self.first_name, self.middle_name]
+        return " ".join(p for p in parts if p).strip()
+    
+    @property
+    def gender_icon(self) -> str:
+        return "♂" if self.gender == 1 else "♀"
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Child':
@@ -61,6 +69,9 @@ class Child:
             id=int(data.get("id", 0)),
             first_name=data.get("first_name", ""),
             last_name=data.get("last_name", ""),
+            middle_name=data.get("middle_name", ""),
+            birth_date=data.get("birth_date", ""),
+            gender=data.get("gender", 1),
             group=data.get("group", ""),
             school=data.get("school", "")
         )
