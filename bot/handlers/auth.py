@@ -507,8 +507,7 @@ async def btn_help(message: Message):
         "• Новых оценках\n\n"
         
         "<b>🔗 Полезные ссылки:</b>\n"
-        "• cabinet.ruobr.ru — электронный дневник\n"
-        "• github.com/sakurka-cmd/ruobr-telegram-bot — исходный код"
+        "• cabinet.ruobr.ru — электронный дневник"
     )
     await message.answer(help_text)
 

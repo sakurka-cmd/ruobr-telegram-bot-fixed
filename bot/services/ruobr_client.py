@@ -202,8 +202,16 @@ class Teacher:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Teacher':
+        # Пробуем получить полное ФИО из разных полей
+        # person_str может быть в формате "Фамилия И.О." или "Фамилия Имя Отчество"
+        name = (
+            data.get("person_str", "") or
+            data.get("fio", "") or
+            data.get("full_name", "") or
+            data.get("name", "")
+        )
         return cls(
-            name=data.get("person_str", ""),
+            name=name,
             subject=data.get("subject_qs", ""),
             user_id=data.get("user_id", 0)
         )
