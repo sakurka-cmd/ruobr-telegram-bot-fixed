@@ -4,7 +4,7 @@
 import asyncio
 import logging
 from datetime import date, timedelta
-from typing import Dict, List, Set
+from typing import Dict, List
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -41,8 +41,8 @@ class NotificationService:
         self._bot = bot
         self._running = False
         self._prev_balances: Dict[int, Dict[int, float]] = {}
-        self._prev_marks: Dict[int, Set[str]] = {}
-        self._prev_food_visits: Dict[int, Set[str]] = {}
+        # Примечание: дедупликация оценок и питания теперь через БД
+        # _prev_marks и _prev_food_visits удалены - используем notification_history
     
     async def start(self) -> None:
         """Запуск фонового мониторинга."""
@@ -232,6 +232,11 @@ class NotificationService:
         """
         Проверка и отправка уведомлений о питании.
         Показывает что поел ребёнок и сколько списано.
+        
+        Логика определения:
+        - ordered=1 означает что ребёнок поел
+        - state=30 означает что заказ подтверждён
+        - наличие блюд в dishes также указывает на питание
         """
         try:
             today = date.today()
@@ -239,26 +244,24 @@ class NotificationService:
             
             food_info = await get_food_for_children(user.login, user.password, children)
             
-            logger.info(f"Food check for user {user.chat_id}: food_info keys={list(food_info.keys())}")
+            logger.info(f"Food check for user {user.chat_id}, date={today_str}")
             
             alerts = []
-            new_visits: Set[str] = set()
             
             for child in children:
                 info = food_info.get(child.id)
                 if not info:
-                    logger.info(f"No food info for child {child.id}")
+                    logger.debug(f"No food info for child {child.id}")
                     continue
                     
                 if not info.visits:
-                    logger.info(f"No visits for child {child.id}")
+                    logger.debug(f"No visits for child {child.id}")
                     continue
                 
-                logger.info(f"Child {child.id} has {len(info.visits)} visits")
+                logger.debug(f"Child {child.id} has {len(info.visits)} visits")
                 
                 for visit in info.visits:
                     visit_date = visit.get("date", "")
-                    logger.info(f"Visit date={visit_date}, today={today_str}")
                     
                     if visit_date != today_str:
                         continue
@@ -266,53 +269,81 @@ class NotificationService:
                     # Проверяем подтверждённое питание
                     ordered = visit.get("ordered")
                     state = visit.get("state")
-                    logger.info(f"Visit ordered={ordered}, state={state}")
+                    dishes = visit.get("dishes", [])
+                    state_str = visit.get("state_str", "")
                     
-                    if not ordered and state != 30:
+                    logger.info(
+                        f"Food visit: child={child.id}, date={visit_date}, "
+                        f"ordered={ordered}, state={state} ({state_str}), "
+                        f"dishes_count={len(dishes)}"
+                    )
+                    
+                    # Определяем, было ли питание:
+                    # 1. ordered=1 - ребёнок поел
+                    # 2. state=30 - заказ подтверждён  
+                    # 3. Есть блюда в dishes - дополнительный признак
+                    has_meal = False
+                    
+                    if ordered:
+                        has_meal = True
+                        logger.info(f"Meal confirmed by ordered={ordered}")
+                    elif state == 30:
+                        has_meal = True
+                        logger.info(f"Meal confirmed by state=30")
+                    elif dishes and len(dishes) > 0:
+                        # Если есть блюда, считаем что питание было
+                        # (иногда ordered не обновляется вовремя)
+                        has_meal = True
+                        logger.info(f"Meal confirmed by dishes presence ({len(dishes)} items)")
+                    
+                    if not has_meal:
+                        logger.debug(f"No meal detected for this visit")
                         continue
                     
-                    # Уникальный ключ визита
-                    visit_key = f"{child.id}:{visit_date}:{visit.get('line', 0)}:{visit.get('time_start', '')}"
-                    new_visits.add(visit_key)
+                    # Уникальный ключ визита для дедупликации
+                    visit_key = f"food:{child.id}:{visit_date}:{visit.get('line', 0)}:{visit.get('time_start', '')}"
                     
-                    prev_visits = self._prev_food_visits.get(user.chat_id, set())
+                    # Проверяем через БД, было ли уже отправлено уведомление
+                    if await is_notification_sent(user.chat_id, "food", visit_key):
+                        logger.debug(f"Already notified for visit {visit_key}")
+                        continue
                     
-                    if visit_key not in prev_visits:
-                        # Новое питание!
-                        meal_type = visit.get("line_name", "Питание")
-                        
-                        # Цена
-                        price_raw = str(visit.get("price_sum") or visit.get("price", "0")).replace(",", ".")
-                        try:
-                            price = float(price_raw)
-                        except ValueError:
-                            price = 0.0
-                        
-                        # Блюда
-                        dishes = visit.get("dishes", [])
-                        dish_names = [d.get("text", "") for d in dishes if d.get("text")]
-                        
-                        # Формируем сообщение
-                        msg_lines = [f"🍽 <b>{child.full_name}</b> ({child.group})"]
-                        msg_lines.append(f"🕐 {meal_type}")
-                        
-                        if dish_names:
-                            msg_lines.append("📋 <b>Меню:</b>")
-                            for dish in dish_names:
-                                msg_lines.append(f"  • {dish}")
-                        
-                        msg_lines.append(f"💰 Списано: <b>{price:.0f} ₽</b>")
-                        
-                        alerts.append("\n".join(msg_lines))
-            
-            self._prev_food_visits[user.chat_id] = new_visits
+                    # Новое питание!
+                    meal_type = visit.get("line_name", "Питание")
+                    
+                    # Цена
+                    price_raw = str(visit.get("price_sum") or visit.get("price", "0")).replace(",", ".")
+                    try:
+                        price = float(price_raw)
+                    except ValueError:
+                        price = 0.0
+                    
+                    # Блюда
+                    dish_names = [d.get("text", "") for d in dishes if d.get("text")]
+                    
+                    # Формируем сообщение
+                    msg_lines = [f"🍽 <b>{child.full_name}</b> ({child.group})"]
+                    msg_lines.append(f"🕐 {meal_type}")
+                    
+                    if dish_names:
+                        msg_lines.append("📋 <b>Меню:</b>")
+                        for dish in dish_names:
+                            msg_lines.append(f"  • {dish}")
+                    
+                    msg_lines.append(f"💰 Списано: <b>{price:.0f} ₽</b>")
+                    
+                    alerts.append("\n".join(msg_lines))
+                    
+                    # Отмечаем в БД что уведомление отправлено
+                    await mark_notification_sent(user.chat_id, "food", visit_key)
+                    logger.info(f"Marked food notification as sent: {visit_key}")
             
             if alerts:
                 text = f"🍽 <b>Ребёнок поел!</b> ({today_str})\n\n" + "\n\n".join(alerts)
                 await self._send_notification(user.chat_id, text)
                 
         except Exception as e:
-            logger.error(f"Error checking food for user {user.chat_id}: {e}")
+            logger.error(f"Error checking food for user {user.chat_id}: {e}", exc_info=True)
     
     async def _send_notification(self, chat_id: int, text: str) -> None:
         """Отправка уведомления пользователю."""
