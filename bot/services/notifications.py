@@ -117,6 +117,57 @@ def extract_dish_names(dishes: Any) -> List[str]:
     return names
 
 
+def parse_complex_menu(qs_units: Any) -> List[str]:
+    """
+    Парсинг комплексного меню из qs_unit.
+    
+    API возвращает комплексное питание как одну строку в qs_unit[0].about:
+    "Рис отварной 150 Тефтели (1 вариант) соус том. 60/30 Хлеб ржаной 20 Компот 200"
+    
+    Формат: "Название Вес" или "Название Вес1/Вес2", разделены пробелами.
+    
+    Args:
+        qs_units: Список qs_unit из API.
+        
+    Returns:
+        Список строк с блюдами и граммовками.
+    """
+    if not qs_units or not isinstance(qs_units, list) or len(qs_units) == 0:
+        return []
+    
+    unit = qs_units[0]
+    if not isinstance(unit, dict):
+        return []
+    
+    about = unit.get("about", "")
+    if not about or not about.strip():
+        return []
+    
+    # Разбиваем строку на отдельные блюда по паттерну:
+    # Каждый элемент: "Название" + число (граммовка)
+    # Пример: "Рис отварной 150" "Тефтели соус том. 60/30" "Хлеб ржаной 20"
+    import re
+    
+    dishes = []
+    # Паттерн: текст до числа с весом
+    # Числа могут быть в формате "150" или "60/30" или "200/7"
+    # Используем lookahead: текст + пробел + цифры (вес)
+    parts = re.split(r'\s+(?=\d[\d/]*(?:\s|$))', about.strip())
+    
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        
+        # Убираем вес из конца (числа типа 150, 60/30, 200/7)
+        part = re.sub(r'\s+\d[\d/]*$', '', part)
+        
+        if part.strip():
+            dishes.append(part.strip())
+    
+    return dishes
+
+
 def extract_price(visit: Dict) -> float:
     """
     Извлечение цены из визита с поддержкой разных ключей и форматов.
@@ -478,7 +529,9 @@ class NotificationService:
                         continue
                     
                     # Новое питание!
-                    meal_type = (
+                    complex_name = visit.get("complex", "")
+                    
+                    meal_type = complex_name or (
                         visit.get("line_name") or
                         visit.get("type_name") or
                         visit.get("meal_type") or
@@ -488,8 +541,11 @@ class NotificationService:
                     # Цена
                     price = extract_price(visit)
                     
-                    # Блюда
+                    # Блюда: пробуем из dishes, потом из qs_unit (комплексное меню)
                     dish_names = extract_dish_names(dishes)
+                    if not dish_names:
+                        qs_units = visit.get("qs_unit", [])
+                        dish_names = parse_complex_menu(qs_units)
                     
                     # Формируем сообщение
                     msg_lines = [f"🍽 <b>{child.full_name}</b> ({child.group})"]
