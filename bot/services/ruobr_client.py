@@ -204,23 +204,83 @@ class Classmate:
 
 @dataclass
 class AchievementDirection:
-    """Направление достижений."""
+    """Направление дополнительного образования."""
     direction: str
     count: int
     percent: int
+    programs: List[Dict[str, Any]]
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AchievementDirection':
+        # Программы могут быть вложены в направление под разными ключами
+        programs = (
+            data.get("list", []) or
+            data.get("do_list", []) or
+            data.get("programs", []) or
+            []
+        )
         return cls(
-            direction=data.get("direction_str", ""),
-            count=data.get("cnt", 0),
-            percent=data.get("percent_int", 0)
+            direction=data.get("direction_str", "") or data.get("name", ""),
+            count=data.get("cnt", 0) or data.get("count", 0),
+            percent=data.get("percent_int", 0) or data.get("percent", 0),
+            programs=programs if isinstance(programs, list) else []
+        )
+
+
+@dataclass
+class CertificateProgram:
+    """Программа дополнительного образования из сертификата ПФДО."""
+    text: str           # название программы
+    org: str            # учреждение
+    sum_str: str        # стоимость (строка)
+    status_text: str    # статус (Завершена, Зачислен и т.д.)
+    year: str           # год
+    state: str          # числовой статус
+    direction: str      # направление (если есть в данных)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'CertificateProgram':
+        return cls(
+            text=data.get("text", "") or data.get("program", ""),
+            org=data.get("org", "") or data.get("organization", ""),
+            sum_str=str(data.get("sum", "") or ""),
+            status_text=data.get("status_text", "") or data.get("status", ""),
+            year=str(data.get("year", "") or ""),
+            state=str(data.get("state", "") or ""),
+            direction=data.get("direction", "") or data.get("direction_str", "")
+        )
+    
+    @property
+    def is_active(self) -> bool:
+        """Текущая программа (зачислен)."""
+        active_statuses = ("зачислен", "зачислена", "обучается", "действует")
+        return self.status_text.lower().strip() in active_statuses
+
+
+@dataclass
+class Certificate:
+    """Данные по сертификату ПФДО."""
+    number: str             # номер сертификата
+    nominal: str            # номинал
+    balance: str            # остаток
+    programs: List[CertificateProgram]
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Certificate':
+        raw_programs = data.get("list", []) or data.get("programs", []) or []
+        programs = [CertificateProgram.from_dict(p) for p in raw_programs]
+        
+        return cls(
+            number=str(data.get("number", "") or data.get("cert_number", "")),
+            nominal=str(data.get("nominal", "") or ""),
+            balance=str(data.get("balance", "") or ""),
+            programs=programs
         )
 
 
 @dataclass
 class Achievements:
-    """Достижения ученика."""
+    """Дополнительное образование ученика."""
     directions: List[AchievementDirection]
     projects: List[Dict[str, Any]]
     gto_id: str
@@ -416,6 +476,8 @@ class RuobrClient:
                 result = client.get_classmates()
             elif endpoint == "achievements":
                 result = client.get_achievements()
+            elif endpoint == "certificate":
+                result = client.get_certificate()
             elif endpoint == "guide":
                 result = client.get_guide()
             else:
@@ -503,10 +565,10 @@ class RuobrClient:
     
     async def get_achievements(self) -> Achievements:
         """
-        Получение достижений.
+        Получение данных о дополнительном образовании.
         
         Returns:
-            Объект Achievements.
+            Объект Achievements с направлениями и программами.
         """
         result = await self._request_with_retry("GET", "achievements")
         
@@ -514,7 +576,38 @@ class RuobrClient:
             logger.warning(f"Unexpected achievements response type: {type(result)}")
             return Achievements(directions=[], projects=[], gto_id="")
         
+        # Логируем структуру do_direction для отладки
+        do_dir = result.get("do_direction", [])
+        if do_dir and isinstance(do_dir, list) and do_dir[0]:
+            logger.info(f"Achievements do_direction keys: {list(do_dir[0].keys())}")
+            for d in do_dir:
+                programs = d.get("list", []) or d.get("do_list", []) or d.get("programs", [])
+                if programs:
+                    logger.info(f"  Direction '{d.get('direction_str', d.get('name', ''))}' has {len(programs)} nested programs")
+                    break
+        
         return Achievements.from_dict(result)
+    
+    async def get_certificate(self) -> Certificate:
+        """
+        Получение информации о сертификате ПФДО.
+        
+        Returns:
+            Объект Certificate с программами и балансом.
+        """
+        result = await self._request_with_retry("GET", "certificate")
+        
+        if not isinstance(result, dict):
+            logger.warning(f"Unexpected certificate response type: {type(result)}")
+            return Certificate(number="", nominal="", balance="", programs=[])
+        
+        # Логируем структуру для отладки
+        logger.info(f"Certificate response keys: {list(result.keys())}")
+        raw_programs = result.get("list", []) or result.get("programs", [])
+        if raw_programs and isinstance(raw_programs, list) and raw_programs[0]:
+            logger.info(f"Certificate program keys: {list(raw_programs[0].keys())}")
+        
+        return Certificate.from_dict(result)
     
     async def get_guide(self) -> SchoolGuide:
         """
@@ -641,7 +734,7 @@ async def get_achievements_for_child(
     child_index: int = 0
 ) -> Achievements:
     """
-    Получение достижений для ребёнка.
+    Получение данных о доп. образовании для ребёнка.
     
     Args:
         login: Логин Ruobr.
@@ -654,6 +747,27 @@ async def get_achievements_for_child(
     async with RuobrClient(login, password) as client:
         client.set_child(child_index)
         return await client.get_achievements()
+
+
+async def get_certificate_for_child(
+    login: str,
+    password: str,
+    child_index: int = 0
+) -> Certificate:
+    """
+    Получение сертификата ПФДО для ребёнка.
+    
+    Args:
+        login: Логин Ruobr.
+        password: Пароль Ruobr.
+        child_index: Индекс ребёнка (0 по умолчанию).
+        
+    Returns:
+        Объект Certificate.
+    """
+    async with RuobrClient(login, password) as client:
+        client.set_child(child_index)
+        return await client.get_certificate()
 
 
 async def get_guide_for_child(

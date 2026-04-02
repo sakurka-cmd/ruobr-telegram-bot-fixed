@@ -7,6 +7,8 @@ from .ruobr_client import (
     Classmate,
     AchievementDirection,
     Achievements,
+    CertificateProgram,
+    Certificate,
     Teacher,
     SchoolGuide,
     RuobrError,
@@ -17,6 +19,7 @@ from .ruobr_client import (
     get_timetable_for_children,
     get_classmates_for_child,
     get_achievements_for_child,
+    get_certificate_for_child,
     get_guide_for_child,
 )
 from .cache import (
@@ -37,6 +40,8 @@ __all__ = [
     "Classmate",
     "AchievementDirection",
     "Achievements",
+    "CertificateProgram",
+    "Certificate",
     "Teacher",
     "SchoolGuide",
     "RuobrError",
@@ -47,6 +52,7 @@ __all__ = [
     "get_timetable_for_children",
     "get_classmates_for_child",
     "get_achievements_for_child",
+    "get_certificate_for_child",
     "get_guide_for_child",
     "MemoryCache",
     "children_cache",

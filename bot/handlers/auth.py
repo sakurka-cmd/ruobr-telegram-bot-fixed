@@ -12,7 +12,7 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKe
 from ..config import config
 from ..database import get_user, create_or_update_user, UserConfig
 from ..states import LoginStates
-from ..services import get_children_async, AuthenticationError, get_classmates_for_child, get_achievements_for_child, get_guide_for_child
+from ..services import get_children_async, AuthenticationError, get_classmates_for_child, get_achievements_for_child, get_certificate_for_child, get_guide_for_child
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def get_info_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="👥 Одноклассники"), KeyboardButton(text="👩‍🏫 Учителя")],
-            [KeyboardButton(text="🏆 Достижения")],
+            [KeyboardButton(text="🎓 Доп. образование")],
             [KeyboardButton(text="📋 Справка")],
             [KeyboardButton(text="◀️ Назад")],
         ],
@@ -400,33 +400,210 @@ async def show_teachers(message: Message, login: str, password: str, child_index
         await status_msg.edit_text(f"❌ Ошибка: {e}")
 
 
+def _format_program(p, show_org=True) -> str:
+    """Форматирование одной программы."""
+    parts = [f"  • {p.text}"]
+    if show_org and p.org:
+        parts.append(f"    🏢 {p.org}")
+    if p.year:
+        parts.append(f"    📅 {p.year}")
+    if p.sum_str and p.sum_str not in ("0", "0.0", ""):
+        parts.append(f"    💰 {p.sum_str}")
+    return "\n".join(parts)
+
+
+def _group_programs_by_direction(programs, directions):
+    """
+    Группировка программ по направлениям.
+    Возвращает dict {direction_name: [programs]}.
+    Programs без направления попадают в "Другое".
+    """
+    # Если у программ есть поле direction — группируем по нему
+    has_direction_field = any(p.direction for p in programs)
+    
+    if has_direction_field:
+        groups = {}
+        for p in programs:
+            key = p.direction or "Другое"
+            groups.setdefault(key, []).append(p)
+        return groups
+    
+    # Иначе — пробуем сопоставить по названиям направлений
+    direction_names = {d.direction for d in directions}
+    groups = {}
+    ungrouped = []
+    
+    for p in programs:
+        matched = False
+        for dname in direction_names:
+            # Проверяем вхождение ключевых слов направления в название программы
+            dname_lower = dname.lower()
+            text_lower = p.text.lower()
+            # Простые сопоставления по ключевым словам
+            keywords = {
+                "художественн": ["художеств", "музык", "танц", "театр", "рисован", "вокал", "хор", "искусств", "дизайн", "фото", "кино", "анимац"],
+                "техничес": ["технич", "робот", "программир", "информат", "моделир", "авиа", "косм", "инженер", "электрон", "конструир"],
+                "спортив": ["спорт", "футб", "хокк", "баскетб", "волейб", "плаван", "борьб", "гимнаст", "каратэ", "самбо", "дзюдо", "бокс", "шахмат"],
+                "социально-гуманитарн": ["социальн", "гуманитар", "эколог", "туризм", "патриот", "медиа", "журнал", "психолог", "волонтёр", "волонтер", "краевед"],
+                "естественнонаучн": ["биолог", "хим", "физик", "математ", "наук", "исследован", "лаборатор"],
+            }
+            for dkey, kws in keywords.items():
+                if dkey in dname_lower:
+                    if any(kw in text_lower for kw in kws):
+                        groups.setdefault(dname, []).append(p)
+                        matched = True
+                        break
+            if matched:
+                break
+        if not matched:
+            ungrouped.append(p)
+    
+    if ungrouped:
+        groups.setdefault("Другое", []).extend(ungrouped)
+    
+    # Добавляем направления без программ (пустые)
+    for d in directions:
+        if d.direction not in groups:
+            groups[d.direction] = []
+    
+    return groups
+
+
+def _build_education_text(child_name: str, achievements, certificate):
+    """
+    Формирование текста сообщения о доп. образовании.
+    Программы группируются по направлениям и разделяются на текущие/прошлые.
+    """
+    lines = [f"🎓 <b>Дополнительное образование</b> — {child_name}"]
+    
+    # Собираем все программы из двух источников
+    all_programs = list(certificate.programs) if certificate else []
+    
+    # Также проверяем, вложены ли программы в направления из achievements
+    nested_programs = []
+    if achievements:
+        for d in achievements.directions:
+            if d.programs:
+                for p_raw in d.programs:
+                    # Конвертируем сырые данные в CertificateProgram
+                    from ..services import CertificateProgram
+                    nested_programs.append(CertificateProgram.from_dict(p_raw))
+    
+    # Если есть вложенные программы в направлениях — используем их
+    use_nested = len(nested_programs) > 0
+    if use_nested:
+        all_programs = nested_programs
+    
+    if not all_programs:
+        lines.append("\nДанных о дополнительном образовании пока нет.")
+        return "\n".join(lines)
+    
+    # Разделяем на текущие и завершённые
+    active = [p for p in all_programs if p.is_active]
+    completed = [p for p in all_programs if not p.is_active]
+    
+    # Группируем по направлениям
+    directions = achievements.directions if achievements else []
+    
+    # Текущие программы
+    if active:
+        lines.append(f"\n✅ <b>Текущие программы</b> ({len(active)}):")
+        if use_nested:
+            # Программы уже сгруппированы по направлениям внутри achievements
+            for d in directions:
+                if d.programs:
+                    dir_active = []
+                    for p_raw in d.programs:
+                        from ..services import CertificateProgram
+                        p = CertificateProgram.from_dict(p_raw)
+                        if p.is_active:
+                            dir_active.append(p)
+                    if dir_active:
+                        lines.append(f"\n📍 <b>{d.direction}</b>")
+                        for p in dir_active:
+                            lines.append(_format_program(p))
+        else:
+            active_groups = _group_programs_by_direction(active, directions)
+            for dname, progs in active_groups.items():
+                if progs:
+                    lines.append(f"\n📍 <b>{dname}</b>")
+                    for p in progs:
+                        lines.append(_format_program(p))
+    
+    # Завершённые программы
+    if completed:
+        lines.append(f"\n📜 <b>Прошлые программы</b> ({len(completed)}):")
+        if use_nested:
+            for d in directions:
+                if d.programs:
+                    dir_completed = []
+                    for p_raw in d.programs:
+                        from ..services import CertificateProgram
+                        p = CertificateProgram.from_dict(p_raw)
+                        if not p.is_active:
+                            dir_completed.append(p)
+                    if dir_completed:
+                        lines.append(f"\n📍 <b>{d.direction}</b>")
+                        for p in dir_completed:
+                            lines.append(_format_program(p))
+        else:
+            completed_groups = _group_programs_by_direction(completed, directions)
+            for dname, progs in completed_groups.items():
+                if progs:
+                    lines.append(f"\n📍 <b>{dname}</b>")
+                    for p in progs:
+                        lines.append(_format_program(p))
+    
+    # Информация о сертификате
+    if certificate:
+        cert_info = []
+        if certificate.number:
+            cert_info.append(f"  № {certificate.number}")
+        if certificate.nominal:
+            cert_info.append(f"номинал: {certificate.nominal}")
+        if certificate.balance:
+            cert_info.append(f"остаток: {certificate.balance}")
+        if cert_info:
+            lines.append(f"\n💳 <b>Сертификат ПФДО:</b>")
+            lines.append("  " + " | ".join(cert_info))
+    
+    return "\n".join(lines)
+
+
 async def show_achievements(message: Message, login: str, password: str, child_index: int, child_name: str):
-    """Показать достижения"""
-    status_msg = await message.answer("🔄 Загрузка достижений...")
+    """Показать дополнительное образование"""
+    status_msg = await message.answer("🔄 Загрузка данных о доп. образовании...")
     
     try:
-        achievements = await get_achievements_for_child(login, password, child_index)
+        import asyncio
         
-        lines = [f"🏆 <b>Достижения</b> — {child_name}\n"]
+        # Параллельно загружаем достижения и сертификат
+        achievements_task = asyncio.create_task(
+            get_achievements_for_child(login, password, child_index)
+        )
+        certificate_task = asyncio.create_task(
+            get_certificate_for_child(login, password, child_index)
+        )
         
-        if achievements.directions:
-            total = sum(d.count for d in achievements.directions)
-            lines.append(f"<b>Всего:</b> {total}\n")
-            
-            for d in achievements.directions:
-                bar = "█" * (d.percent // 10) + "░" * (10 - d.percent // 10)
-                lines.append(f"📍 {d.direction}")
-                lines.append(f"   {bar} {d.count} ({d.percent}%)")
-        else:
-            lines.append("Достижений пока нет.")
+        achievements, certificate = await asyncio.gather(
+            achievements_task, certificate_task,
+            return_exceptions=True
+        )
         
-        if achievements.projects:
-            lines.append(f"\n📝 <b>Проекты:</b> {len(achievements.projects)}")
+        if isinstance(achievements, Exception):
+            logger.warning(f"Achievements fetch failed: {achievements}")
+            achievements = None
+        if isinstance(certificate, Exception):
+            logger.warning(f"Certificate fetch failed: {certificate}")
+            certificate = None
         
-        if achievements.gto_id:
-            lines.append(f"\n🏃 <b>ГТО ID:</b> {achievements.gto_id}")
+        text = _build_education_text(child_name, achievements, certificate)
         
-        await status_msg.edit_text("\n".join(lines))
+        # Обрезаем если слишком длинное
+        if len(text) > 4000:
+            text = text[:3997] + "..."
+        
+        await status_msg.edit_text(text)
             
     except Exception as e:
         logger.error(f"Error getting achievements: {e}")
@@ -457,7 +634,7 @@ async def btn_teachers(message: Message, user_config: Optional[UserConfig] = Non
         await show_teachers(message, user_config.login, user_config.password, idx, children[idx].full_name)
 
 
-@router.message(F.text == "🏆 Достижения")
+@router.message(F.text == "🎓 Доп. образование")
 async def btn_achievements(message: Message, user_config: Optional[UserConfig] = None):
     if user_config is None or not user_config.login:
         await message.answer("❌ Сначала настройте логин/пароль через /set_login")
@@ -493,7 +670,7 @@ async def btn_help(message: Message):
         "<b>ℹ️ Информация:</b>\n"
         "• «Одноклассники» — список класса с датами рождения\n"
         "• «Учителя» — предметники и контакты школы\n"
-        "• «Достижения» — достижения и проекты ученика\n\n"
+        "• «Доп. образование» — программы доп. образования по направлениям\n\n"
         
         "<b>⚙️ Настройки:</b>\n"
         "• «Изменить логин/пароль» — обновить данные\n"
@@ -706,7 +883,7 @@ async def cb_achievements_select(callback: CallbackQuery, user_config: Optional[
     
     try:
         idx = int(callback.data.split("_")[-1])
-        await callback.message.edit_text("🔄 Загрузка достижений...")
+        await callback.message.edit_text("🔄 Загрузка данных о доп. образовании...")
         
         children = await get_children_async(user_config.login, user_config.password)
         
@@ -716,34 +893,34 @@ async def cb_achievements_select(callback: CallbackQuery, user_config: Optional[
         
         import asyncio
         try:
-            achievements = await asyncio.wait_for(
-                get_achievements_for_child(user_config.login, user_config.password, idx),
-                timeout=25
+            achievements, certificate = await asyncio.wait_for(
+                asyncio.gather(
+                    get_achievements_for_child(user_config.login, user_config.password, idx),
+                    get_certificate_for_child(user_config.login, user_config.password, idx),
+                    return_exceptions=True
+                ),
+                timeout=30
             )
         except asyncio.TimeoutError:
             await callback.message.edit_text("⏱ Превышено время ожидания. Попробуйте позже.")
             return
         
-        lines = [f"🏆 <b>Достижения</b> — {children[idx].full_name}\n"]
+        if isinstance(achievements, Exception):
+            logger.warning(f"Achievements fetch failed: {achievements}")
+            achievements = None
+        if isinstance(certificate, Exception):
+            logger.warning(f"Certificate fetch failed: {certificate}")
+            certificate = None
         
-        if achievements.directions:
-            total = sum(d.count for d in achievements.directions)
-            lines.append(f"<b>Всего:</b> {total}\n")
-            
-            for d in achievements.directions:
-                bar = "█" * (d.percent // 10) + "░" * (10 - d.percent // 10)
-                lines.append(f"📍 {d.direction}")
-                lines.append(f"   {bar} {d.count} ({d.percent}%)")
-        else:
-            lines.append("Достижений пока нет.")
+        text = _build_education_text(children[idx].full_name, achievements, certificate)
         
-        if achievements.projects:
-            lines.append(f"\n📝 <b>Проекты:</b> {len(achievements.projects)}")
+        if len(text) > 4000:
+            text = text[:3997] + "..."
         
-        if achievements.gto_id:
-            lines.append(f"\n🏃 <b>ГТО ID:</b> {achievements.gto_id}")
-        
-        await callback.message.edit_text("\n".join(lines))
+        try:
+            await callback.message.edit_text(text)
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
         
     except Exception as e:
         logger.error(f"Error in cb_achievements_select: {e}")
