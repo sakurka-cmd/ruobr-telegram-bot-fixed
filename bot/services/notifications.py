@@ -223,13 +223,21 @@ class NotificationService:
         self._bot = bot
         self._running = False
         self._prev_balances: Dict[int, Dict[int, float]] = {}
-        # Примечание: дедупликация оценок и питания теперь через БД
-        # _prev_marks и _prev_food_visits удалены - используем notification_history
+        self._first_run = True  # Флаг первого запуска
     
     async def start(self) -> None:
         """Запуск фонового мониторинга."""
         self._running = True
+        self._first_run = True
         logger.info("Notification service started")
+        
+        # На первом запуске — фиксируем текущие оценки без отправки уведомлений
+        try:
+            await self._init_marks_baseline()
+        except Exception as e:
+            logger.error(f"Error initializing marks baseline: {e}")
+        
+        self._first_run = False
         
         while self._running:
             try:
@@ -245,6 +253,66 @@ class NotificationService:
         self._running = False
         logger.info("Notification service stopped")
     
+    async def _init_marks_baseline(self) -> None:
+        """
+        При первом запуске фиксируем все текущие оценки как «уже виденные»,
+        чтобы не отправлять при старте уведомления за прошлые дни.
+        """
+        users = await get_all_enabled_users()
+        if not users:
+            return
+        
+        marked_count = 0
+        for user in users:
+            if not user.login or not user.password or not user.marks_enabled:
+                continue
+            try:
+                children = await get_children_async(user.login, user.password)
+                if not children:
+                    continue
+                
+                today = date.today()
+                start = today - timedelta(days=self.MARKS_CHECK_DAYS)
+                
+                timetable = await get_timetable_for_children(
+                    user.login, user.password, children, start, today
+                )
+                
+                for child in children:
+                    lessons = timetable.get(child.id, [])
+                    for lesson in lessons:
+                        for mark in lesson.marks:
+                            notif_key = f"{lesson.date}|{lesson.subject}|{mark.get('question_id')}|{mark.get('mark')}"
+                            if not await is_notification_sent(user.chat_id, "mark", notif_key):
+                                await mark_notification_sent(user.chat_id, "mark", notif_key)
+                                marked_count += 1
+                
+                # Также фиксируем текущие визиты питания как «уже виденные»
+                food_info = await get_food_for_children(user.login, user.password, children)
+                today_str = today.strftime("%Y-%m-%d")
+                for child in children:
+                    info = food_info.get(child.id)
+                    if not info or not info.visits:
+                        continue
+                    for visit in info.visits:
+                        if not isinstance(visit, dict):
+                            continue
+                        raw_date = visit.get("date", "")
+                        visit_date = normalize_date(raw_date)
+                        if visit_date != today_str:
+                            continue
+                        line = visit.get("line", visit.get("line_id", 0))
+                        time_start = visit.get("time_start", visit.get("time", ""))
+                        visit_key = f"food:{child.id}:{visit_date}:{line}:{time_start}"
+                        if not await is_notification_sent(user.chat_id, "food", visit_key):
+                            await mark_notification_sent(user.chat_id, "food", visit_key)
+                            marked_count += 1
+                
+            except Exception as e:
+                logger.warning(f"Error initializing baseline for user {user.chat_id}: {e}")
+        
+        logger.info(f"Baseline initialized: {marked_count} existing items marked as seen (no notifications sent)")
+
     async def _check_all_users(self) -> None:
         """Проверка всех пользователей с включёнными уведомлениями."""
         users = await get_all_enabled_users()
@@ -421,12 +489,14 @@ class NotificationService:
         Проверка и отправка уведомлений о питании.
         Показывает что поел ребёнок и сколько списано.
         
-        Логика определения приёма пищи (срабатывает при любом из условий):
-        - ordered = истинное значение (1, True, "1")
-        - state = 30 (заказ подтверждён)
-        - Есть непустой список блюд в dishes
-        - Есть цена > 0 (признак фактического списания)
-        - state_str содержит "подтвержд" (подтверждён заказ)
+        Логика: уведомление отправляется когда ПОЯВЛЯЕТСЯ подтверждённое питание.
+        
+        Состояния API:
+        - state=10, state_str="Заказ сделан" — предзаказ, ребёнок ещё НЕ поел
+        - state=20, state_str="Заказ отменён" — заказ отменён
+        - state=30, state_str="Заказ подтверждён" — ребёнок поел
+        
+        Уведомление отправляем только при state=30 или ordered=1 с реальными блюдами.
         """
         try:
             today = date.today()
@@ -485,39 +555,29 @@ class NotificationService:
                         f"price_sum={visit.get('price_sum')}, price={visit.get('price')}"
                     )
                     
-                    # Определяем, было ли питание — проверяем все возможные признаки:
+                    # Определяем, ПОЕЛ ли ребёнок (факт приёма пищи):
+                    # state=30 — заказ подтверждён (ребёнок поел)
+                    # ordered=1 с непустыми dishes — зафиксировано с блюдами
+                    # ordered=1 со state=30 — двойное подтверждение
                     has_meal = False
                     meal_reason = ""
                     
-                    # 1. ordered = истинное значение
-                    if ordered and (ordered == 1 or ordered is True or str(ordered) == "1"):
+                    # 1. state=30 — заказ подтверждён (основной признак)
+                    if state == 30:
                         has_meal = True
-                        meal_reason = f"ordered={ordered}"
+                        meal_reason = f"state=30 ({state_str})"
                     
-                    # 2. state = 30 (заказ подтверждён)
-                    elif state == 30:
-                        has_meal = True
-                        meal_reason = f"state=30"
+                    # 2. ordered=1 с непустыми блюдами
+                    elif ordered and (ordered == 1 or ordered is True or str(ordered) == "1"):
+                        if dishes and len(dishes) > 0:
+                            dish_names = extract_dish_names(dishes)
+                            if dish_names:
+                                has_meal = True
+                                meal_reason = f"ordered=1 + {len(dish_names)} dishes"
                     
-                    # 3. Есть блюда в dishes
-                    elif dishes and len(dishes) > 0:
-                        dish_names = extract_dish_names(dishes)
-                        if dish_names:
-                            has_meal = True
-                            meal_reason = f"dishes ({len(dish_names)} items)"
-                    
-                    # 4. Есть цена > 0 (признак списания)
-                    elif extract_price(visit) > 0:
-                        has_meal = True
-                        meal_reason = f"price={extract_price(visit):.0f}"
-                    
-                    # 5. state_str содержит подтверждение
-                    elif "подтвержд" in state_str:
-                        has_meal = True
-                        meal_reason = f"state_str='{state_str}'"
-                    
+                    # Пропускаем предзаказы (state=10) и отмены (state=20)
                     if not has_meal:
-                        logger.info(f"No meal detected for visit #{visit_idx}")
+                        logger.debug(f"No confirmed meal for visit #{visit_idx} (state={state})")
                         continue
                     
                     logger.info(f"Meal detected: {meal_reason}")
