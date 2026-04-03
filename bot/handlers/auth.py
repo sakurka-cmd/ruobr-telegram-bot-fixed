@@ -405,6 +405,9 @@ def _format_program(p) -> str:
     parts = [f"  • {p.name}"]
     if p.org:
         parts.append(f"    🏢 {p.org}")
+    # Стоимость
+    if p.sum:
+        parts.append(f"    💵 {p.sum} руб.")
     # Период
     dates = []
     if p.start_date:
@@ -422,8 +425,9 @@ def _format_program(p) -> str:
     if dates:
         sep = " \u2014 " if len(dates) == 2 else ""
         parts.append(f"    📅 {dates[0]}{sep}{dates[1] if len(dates) == 2 else ''}")
+    # Источник финансирования
     if p.fund:
-        parts.append(f"    💰 {p.fund}")
+        parts.append(f"    🏷 {p.fund}")
     return "\n".join(parts)
 
 
@@ -525,14 +529,15 @@ def _build_education_text(child_name: str, achievements, certificate):
                 lines.append(_format_program(p))
     
     # Информация о сертификате
-    cert_parts = []
     if certificate.number:
-        cert_parts.append(f"№ {certificate.number}")
-    if certificate.balance:
-        cert_parts.append(certificate.balance)
-    if cert_parts:
-        lines.append(f"\n💳 <b>Сертификат ПФДО:</b>")
-        lines.append(f"  {' | '.join(cert_parts)}")
+        lines.append(f"\n💳 <b>Сертификат ПФДО</b>")
+        lines.append(f"  Номер: {certificate.number}")
+        if certificate.nominal:
+            lines.append(f"  Номинал: {certificate.nominal} руб.")
+        if certificate.balance_start:
+            lines.append(f"  Было: {certificate.balance_start} руб.")
+        if certificate.balance:
+            lines.append(f"  Остаток: {certificate.balance} руб.")
     
     return "\n".join(lines)
 

@@ -235,6 +235,7 @@ class CertificateProgram:
     name: str               # program_name_short
     name_full: str          # program_name_full
     org: str                # program_school
+    sum: str                # sum / program_sum (стоимость программы)
     fund: str               # fund_str (Бесплатно / Сертификат ПФ / Платно)
     status: str             # статус (текст)
     start_date: str         # pt_pfdo_contract_start_day
@@ -245,10 +246,27 @@ class CertificateProgram:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'CertificateProgram':
+        # Стоимость может приходить под разными ключами
+        raw_sum = (
+            data.get("sum", "") or
+            data.get("program_sum", "") or
+            data.get("contract_sum", "") or
+            data.get("price", "")
+        )
+        # Форматируем: если число — округляем до 2 знаков
+        sum_str = str(raw_sum).strip() if raw_sum else ""
+        if sum_str:
+            try:
+                val = float(sum_str.replace(" ", "").replace("\xa0", ""))
+                sum_str = f"{val:,.2f}".replace(",", " ")
+            except (ValueError, TypeError):
+                pass
+        
         return cls(
             name=data.get("program_name_short", "") or data.get("text", ""),
             name_full=data.get("program_name_full", ""),
             org=data.get("program_school", "") or data.get("org", ""),
+            sum=sum_str,
             fund=data.get("fund_str", ""),
             status=data.get("status", ""),
             start_date=str(data.get("pt_pfdo_contract_start_day", "") or ""),
@@ -280,6 +298,18 @@ class Certificate:
     programs_active: List[CertificateProgram]   # petition_good
     programs_completed: List[CertificateProgram]  # petition_bad
     
+    @staticmethod
+    def _fmt_money(val) -> str:
+        """Форматирование денежного значения."""
+        if not val:
+            return ""
+        s = str(val).strip().replace("\xa0", "").replace(" ", "")
+        try:
+            v = float(s)
+            return f"{v:,.2f}".replace(",", " ")
+        except (ValueError, TypeError):
+            return s
+    
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Certificate':
         programs_active = [
@@ -293,9 +323,9 @@ class Certificate:
         
         return cls(
             number=str(data.get("number_cert", "") or ""),
-            nominal=str(data.get("rmc_nominal", "") or ""),
-            balance=str(data.get("balance", "") or ""),
-            balance_start=str(data.get("balance_start", "") or ""),
+            nominal=cls._fmt_money(data.get("rmc_nominal", "")),
+            balance=cls._fmt_money(data.get("balance", "")),
+            balance_start=cls._fmt_money(data.get("balance_start", "")),
             group_name=str(data.get("cert_group_name", "") or ""),
             territory=str(data.get("cert_territory", "") or ""),
             programs_active=programs_active,
