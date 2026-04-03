@@ -576,15 +576,9 @@ class RuobrClient:
             logger.warning(f"Unexpected achievements response type: {type(result)}")
             return Achievements(directions=[], projects=[], gto_id="")
         
-        # Логируем структуру do_direction для отладки
-        do_dir = result.get("do_direction", [])
-        if do_dir and isinstance(do_dir, list) and do_dir[0]:
-            logger.info(f"Achievements do_direction keys: {list(do_dir[0].keys())}")
-            for d in do_dir:
-                programs = d.get("list", []) or d.get("do_list", []) or d.get("programs", [])
-                if programs:
-                    logger.info(f"  Direction '{d.get('direction_str', d.get('name', ''))}' has {len(programs)} nested programs")
-                    break
+        # Логируем полную структуру для отладки
+        import json
+        logger.info(f"Achievements raw response: {json.dumps(result, ensure_ascii=False)[:3000]}")
         
         return Achievements.from_dict(result)
     
@@ -601,11 +595,9 @@ class RuobrClient:
             logger.warning(f"Unexpected certificate response type: {type(result)}")
             return Certificate(number="", nominal="", balance="", programs=[])
         
-        # Логируем структуру для отладки
-        logger.info(f"Certificate response keys: {list(result.keys())}")
-        raw_programs = result.get("list", []) or result.get("programs", [])
-        if raw_programs and isinstance(raw_programs, list) and raw_programs[0]:
-            logger.info(f"Certificate program keys: {list(raw_programs[0].keys())}")
+        # Логируем полную структуру для отладки
+        import json
+        logger.info(f"Certificate raw response: {json.dumps(result, ensure_ascii=False)[:3000]}")
         
         return Certificate.from_dict(result)
     
