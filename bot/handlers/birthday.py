@@ -177,11 +177,19 @@ async def cb_toggle_global(
 @router.callback_query(F.data == "bd_back")
 async def cb_back(callback: CallbackQuery):
     """Возврат в настройки."""
-    await callback.answer()
     from .auth import get_settings_keyboard
-    await callback.message.edit_text(
+    keyboard = get_settings_keyboard()
+    try:
+        await callback.message.edit_text(
+            "⚙️ <b>Настройки</b>",
+            reply_markup=None,
+        )
+    except Exception:
+        pass
+    await callback.answer()
+    await callback.message.answer(
         "⚙️ <b>Настройки</b>",
-        reply_markup=get_settings_keyboard(),
+        reply_markup=keyboard,
     )
 
 
