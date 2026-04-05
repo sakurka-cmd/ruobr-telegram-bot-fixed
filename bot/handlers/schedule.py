@@ -228,6 +228,20 @@ async def cmd_hwtomorrow(message: Message, user_config: Optional[UserConfig] = N
             timeout=NETWORK_TIMEOUT
         )
         
+        # DEBUG: логируем все уроки с ДЗ
+        logger.info(f"HW check: tomorrow={tomorrow_str}, children={len(children)}")
+        for child in children:
+            lessons = timetable.get(child.id, [])
+            for lesson in lessons:
+                if lesson.homework:
+                    logger.info(
+                        f"HW lesson: child={child.id} date={lesson.date} "
+                        f"subject={lesson.subject} hw_count={len(lesson.homework)}"
+                    )
+                    for hw in lesson.homework:
+                        dl = hw.get("deadline", "")
+                        logger.info(f"  HW item: keys={list(hw.keys())} deadline={dl!r}")
+        
         lines = [f"📘 <b>Домашнее задание на завтра</b> ({format_date(tomorrow_str)})"]
         found = False
         
