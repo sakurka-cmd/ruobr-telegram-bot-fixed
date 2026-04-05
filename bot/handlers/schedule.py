@@ -219,12 +219,12 @@ async def cmd_hwtomorrow(message: Message, user_config: Optional[UserConfig] = N
         tomorrow = today + timedelta(days=1)
         tomorrow_str = tomorrow.strftime("%Y-%m-%d")
         
-        # Запрашиваем расписание на неделю, так как ДЗ может быть задано раньше
-        monday = today - timedelta(days=today.weekday())
-        sunday = monday + timedelta(days=6)
+        # Запрашиваем расписание на 14 дней, чтобы точно покрыть завтра
+        # (если сегодня воскресенье, завтра = следующий понедельник)
+        end = today + timedelta(days=14)
         
         timetable = await asyncio.wait_for(
-            get_timetable_for_children(login, password, children, monday, sunday),
+            get_timetable_for_children(login, password, children, today, end),
             timeout=NETWORK_TIMEOUT
         )
         
