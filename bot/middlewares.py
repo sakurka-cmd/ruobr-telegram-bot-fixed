@@ -11,7 +11,6 @@ from typing import Any, Callable, Dict, Optional
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.base import StorageKey
 
 from .config import config
 from .database import get_user, UserConfig
@@ -204,36 +203,4 @@ class LoggingMiddleware(BaseMiddleware):
             raise
 
 
-class ThrottlingMiddleware(BaseMiddleware):
-    """
-    Middleware для предотвращения флуда при FSM.
-    Блокирует обработку если предыдущий запрос ещё обрабатывается.
-    """
-    
-    def __init__(self):
-        self._processing: Dict[int, bool] = defaultdict(bool)
-        self._lock = asyncio.Lock()
-    
-    async def __call__(
-        self,
-        handler: Callable[[Message, Dict[str, Any]], Any],
-        event: Message,
-        data: Dict[str, Any]
-    ) -> Any:
-        user_id = event.from_user.id if event.from_user else 0
-        
-        if user_id == 0:
-            return await handler(event, data)
-        
-        # Проверяем, обрабатывается ли уже запрос от этого пользователя
-        async with self._lock:
-            if self._processing[user_id]:
-                logger.debug(f"Skipping duplicate request from user {user_id}")
-                return
-            self._processing[user_id] = True
-        
-        try:
-            return await handler(event, data)
-        finally:
-            async with self._lock:
-                self._processing[user_id] = False
+

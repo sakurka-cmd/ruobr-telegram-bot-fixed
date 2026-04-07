@@ -37,8 +37,7 @@ from bot.database import db_pool
 from bot.middlewares import (
     RateLimitMiddleware,
     AuthMiddleware,
-    LoggingMiddleware,
-    ThrottlingMiddleware
+    LoggingMiddleware
 )
 from aiogram.types import CallbackQuery
 from bot.handlers import auth, balance, schedule, birthday
@@ -132,7 +131,6 @@ async def main() -> None:
     ))
     dp.message.middleware(AuthMiddleware())
     dp.message.middleware(LoggingMiddleware())
-    dp.message.middleware(ThrottlingMiddleware())
     
     # Регистрация middleware для callback queries
     dp.callback_query.middleware(AuthMiddleware())
