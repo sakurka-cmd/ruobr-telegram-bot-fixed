@@ -142,6 +142,7 @@ class NotificationService:
         self._prev_balances: Dict[int, Dict[int, float]] = {}
         self._last_balance_check: Dict[int, float] = {}
         self._last_food_check: Dict[int, float] = {}
+        self._last_birthday_check_hour: Dict[int, int] = {}
         self._first_run = True  # Флаг первого запуска
 
     async def start(self) -> None:
@@ -620,11 +621,19 @@ class NotificationService:
         """
         Проверка и отправка уведомлений о днях рождения одноклассников.
         Поддерживает два режима: 'tomorrow' и 'weekly'.
+        Проверяется не чаще 1 раза в час (окно уведомления = 2 минуты).
         """
         try:
             # Часовой пояс Новосибирск (GMT+7)
             tz = timezone(timedelta(hours=7))
             now = datetime.now(tz)
+            current_hour = now.hour
+
+            # Пропускаем если уже проверяли в этом часу
+            last_checked_hour = self._last_birthday_check_hour.get(user.chat_id, -1)
+            if last_checked_hour == current_hour:
+                return
+            self._last_birthday_check_hour[user.chat_id] = current_hour
 
             for child_idx, child in enumerate(children):
                 settings = await get_birthday_settings(user.chat_id, child.id)
