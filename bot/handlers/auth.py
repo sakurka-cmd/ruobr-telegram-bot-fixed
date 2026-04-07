@@ -394,8 +394,6 @@ async def show_teachers(message: Message, login: str, password: str, child_index
         lines.append(f"<b>Школа:</b> {guide.name}")
         if guide.phone:
             lines.append(f"<b>Телефон:</b> {guide.phone}")
-        if guide.url:
-            lines.append(f"<b>Сайт:</b> {guide.url}")
         lines.append("")
         
         if subject_teachers:
@@ -842,8 +840,6 @@ async def cb_teachers_select(callback: CallbackQuery, user_config: Optional[User
         lines.append(f"<b>Школа:</b> {guide.name}")
         if guide.phone:
             lines.append(f"<b>Телефон:</b> {guide.phone}")
-        if guide.url:
-            lines.append(f"<b>Сайт:</b> {guide.url}")
         lines.append("")
         
         if subject_teachers:
