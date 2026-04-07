@@ -35,6 +35,21 @@ def _is_navigation_command(text: str) -> bool:
     return text.strip() in NAV
 
 
+def _safe_login_password(user_config):
+    """
+    Safe decryption of user credentials.
+    Returns (login, password) or (None, None) on error.
+    """
+    if not user_config or not user_config.password_encrypted:
+        return None, None
+    try:
+        password = decrypt_password(user_config.password_encrypted)
+        return user_config.login, password
+    except Exception as e:
+        logger.error(f"Error decrypting credentials: {e}")
+        return None, None
+
+
 # ===== Клавиатуры =====
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:

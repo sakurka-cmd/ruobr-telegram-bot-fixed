@@ -229,7 +229,7 @@ def _safe_decrypt(user: UserConfig):
         password = decrypt_password(user.password_encrypted)
         return user.login, password
     except Exception as e:
-        logger.warning(f"Failed to decrypt password for user {user.user_id}: {e}")
+        logger.warning(f"Failed to decrypt password for user {user.chat_id}: {e}")
         return None, None
 
 
