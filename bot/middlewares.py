@@ -162,7 +162,7 @@ class AuthMiddleware(BaseMiddleware):
         data["is_authenticated"] = (
             user_config is not None 
             and user_config.login is not None 
-            and user_config.password is not None
+            and user_config.password_encrypted is not None
         )
         
         return await handler(event, data)

@@ -13,6 +13,8 @@ from aiogram.types import (
     CallbackQuery,
 )
 
+from ..encryption import decrypt_password
+
 from ..database import (
     get_user,
     create_or_update_user,
@@ -78,7 +80,7 @@ async def cmd_birthday_settings(
     if user_config is None:
         user_config = await create_or_update_user(message.chat.id)
 
-    if not user_config.login or not user_config.password:
+    if not user_config.login or not user_config.password_encrypted:
         await message.answer(
             "❌ Сначала настройте логин/пароль через /set_login"
         )
@@ -86,7 +88,10 @@ async def cmd_birthday_settings(
 
     # Получаем список детей
     try:
-        children = await get_children_async(user_config.login, user_config.password)
+        _login, _password = _bd_safe_creds(user_config)
+        if not _login:
+            return
+        children = await get_children_async(_login, _password)
     except Exception as e:
         logger.error(f"Error getting children: {e}")
         await message.answer("❌ Ошибка получения списка детей.")
@@ -458,7 +463,10 @@ async def _show_child_settings_screen(
 ):
     """Показать экран настроек ДР для конкретного ребёнка (без callback.answer)."""
     try:
-        children = await get_children_async(user_config.login, user_config.password)
+        _login, _password = _bd_safe_creds(user_config)
+        if not _login:
+            return
+        children = await get_children_async(_login, _password)
     except Exception:
         await callback.message.edit_text("❌ Ошибка получения списка детей.")
         return
@@ -514,12 +522,15 @@ async def _show_child_settings_screen(
 
 async def _show_birthday_menu(callback: CallbackQuery, user_config: UserConfig):
     """Показать главное меню настроек ДР (для callback)."""
-    if not user_config.login or not user_config.password:
+    if not user_config.login or not user_config.password_encrypted:
         await callback.message.edit_text("❌ Сначала настройте логин/пароль через /set_login")
         return
 
     try:
-        children = await get_children_async(user_config.login, user_config.password)
+        _login, _password = _bd_safe_creds(user_config)
+        if not _login:
+            return
+        children = await get_children_async(_login, _password)
     except Exception:
         await callback.message.edit_text("❌ Ошибка получения списка детей.")
         return
@@ -634,3 +645,4 @@ async def _show_weekday_selection(message, child_id: int, child_index: int, curr
         "📅 <b>Выберите день недели:</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
     )
+

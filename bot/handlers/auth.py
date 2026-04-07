@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from ..config import config
+from ..encryption import decrypt_password
 from ..database import get_user, create_or_update_user, UserConfig
 from ..states import LoginStates
 from ..services import get_children_async, AuthenticationError, get_classmates_for_child, get_achievements_for_child, get_certificate_for_child, get_guide_for_child
@@ -71,7 +72,7 @@ async def cmd_start(message: Message, user_config: Optional[UserConfig] = None):
     if user_config is None:
         user_config = await create_or_update_user(message.chat.id)
     
-    is_auth = user_config.login and user_config.password
+    is_auth = user_config.login and user_config.password_encrypted
     
     welcome_text = (
         "👋 <b>Добро пожаловать в школьный бот!</b>\n\n"
@@ -246,7 +247,10 @@ def get_child_select_keyboard(children, action: str) -> InlineKeyboardMarkup:
 async def get_children_or_select(message: Message, user_config: UserConfig, action: str):
     """Получить детей или показать выбор"""
     try:
-        children = await get_children_async(user_config.login, user_config.password)
+        _login, _password = _safe_login_password(user_config)
+        if not _login:
+            return
+        children = await get_children_async(_login, _password)
         if not children:
             await message.answer("❌ Дети не найдены.")
             return None
@@ -591,7 +595,7 @@ async def btn_classmates(message: Message, user_config: Optional[UserConfig] = N
     result = await get_children_or_select(message, user_config, "classmates")
     if result:
         children, idx = result
-        await show_classmates(message, user_config.login, user_config.password, idx, children[idx].full_name)
+        await show_classmates(message, _login, _password, idx, children[idx].full_name)
 
 
 @router.message(F.text == "👩‍🏫 Учителя")
@@ -603,7 +607,7 @@ async def btn_teachers(message: Message, user_config: Optional[UserConfig] = Non
     result = await get_children_or_select(message, user_config, "teachers")
     if result:
         children, idx = result
-        await show_teachers(message, user_config.login, user_config.password, idx, children[idx].full_name)
+        await show_teachers(message, _login, _password, idx, children[idx].full_name)
 
 
 @router.message(F.text == "🎓 Доп. образование")
@@ -615,7 +619,7 @@ async def btn_achievements(message: Message, user_config: Optional[UserConfig] =
     result = await get_children_or_select(message, user_config, "achievements")
     if result:
         children, idx = result
-        await show_achievements(message, user_config.login, user_config.password, idx, children[idx].full_name)
+        await show_achievements(message, _login, _password, idx, children[idx].full_name)
 
 
 @router.message(F.text == "📋 Справка")
@@ -685,7 +689,10 @@ async def cb_classmates_select(callback: CallbackQuery, user_config: Optional[Us
         # Показываем loading
         await callback.message.edit_text("🔄 Загрузка одноклассников...")
         
-        children = await get_children_async(user_config.login, user_config.password)
+        _login, _password = _safe_login_password(user_config)
+        if not _login:
+            return
+        children = await get_children_async(_login, _password)
         
         if not children or idx >= len(children):
             await callback.message.edit_text("❌ Ошибка: ребёнок не найден")
@@ -695,7 +702,7 @@ async def cb_classmates_select(callback: CallbackQuery, user_config: Optional[Us
         import asyncio
         try:
             classmates = await asyncio.wait_for(
-                get_classmates_for_child(user_config.login, user_config.password, idx),
+                get_classmates_for_child(_login, _password, idx),
                 timeout=25
             )
         except asyncio.TimeoutError:
@@ -782,7 +789,10 @@ async def cb_teachers_select(callback: CallbackQuery, user_config: Optional[User
         idx = int(callback.data.split("_")[-1])
         await callback.message.edit_text("🔄 Загрузка учителей...")
         
-        children = await get_children_async(user_config.login, user_config.password)
+        _login, _password = _safe_login_password(user_config)
+        if not _login:
+            return
+        children = await get_children_async(_login, _password)
         
         if not children or idx >= len(children):
             await callback.message.edit_text("❌ Ошибка: ребёнок не найден")
@@ -791,7 +801,7 @@ async def cb_teachers_select(callback: CallbackQuery, user_config: Optional[User
         import asyncio
         try:
             guide = await asyncio.wait_for(
-                get_guide_for_child(user_config.login, user_config.password, idx),
+                get_guide_for_child(_login, _password, idx),
                 timeout=25
             )
         except asyncio.TimeoutError:
@@ -857,7 +867,10 @@ async def cb_achievements_select(callback: CallbackQuery, user_config: Optional[
         idx = int(callback.data.split("_")[-1])
         await callback.message.edit_text("🔄 Загрузка данных о доп. образовании...")
         
-        children = await get_children_async(user_config.login, user_config.password)
+        _login, _password = _safe_login_password(user_config)
+        if not _login:
+            return
+        children = await get_children_async(_login, _password)
         
         if not children or idx >= len(children):
             await callback.message.edit_text("❌ Ошибка: ребёнок не найден")
@@ -867,8 +880,8 @@ async def cb_achievements_select(callback: CallbackQuery, user_config: Optional[
         try:
             achievements, certificate = await asyncio.wait_for(
                 asyncio.gather(
-                    get_achievements_for_child(user_config.login, user_config.password, idx),
-                    get_certificate_for_child(user_config.login, user_config.password, idx),
+                    get_achievements_for_child(_login, _password, idx),
+                    get_certificate_for_child(_login, _password, idx),
                     return_exceptions=True
                 ),
                 timeout=30
@@ -916,7 +929,7 @@ async def btn_profile(message: Message, user_config: Optional[UserConfig] = None
         await message.answer("Профиль не найден. Используйте /start")
         return
     
-    status = "✅ Настроен" if user_config.login and user_config.password else "❌ Не настроен"
+    status = "✅ Настроен" if user_config.login and user_config.password_encrypted else "❌ Не настроен"
     notif_status = "🔔 Включены" if user_config.enabled else "🔕 Выключены"
     marks_status = "🔔 Включены" if user_config.marks_enabled else "🔕 Выключены"
     
@@ -1033,3 +1046,5 @@ async def cb_toggle_birthday(callback: CallbackQuery, user_config: Optional[User
     
     updated = await get_user(callback.message.chat.id)
     await callback.message.edit_reply_markup(reply_markup=get_notification_keyboard(updated))
+
+

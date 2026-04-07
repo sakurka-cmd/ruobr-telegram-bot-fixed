@@ -18,7 +18,8 @@ from ..database import (
     cleanup_old_notifications,
     get_users_with_birthday_notifications,
     get_birthday_settings,
-    UserConfig
+    UserConfig,
+    decrypted_credentials
 )
 from . import (
     get_children_async,
@@ -214,6 +215,32 @@ def extract_price(visit: Dict) -> float:
     return 0.0
 
 
+
+
+def _safe_decrypt(user: UserConfig):
+    """
+    Расшифровать пароль пользователя с затиранием после использования.
+    Возвращает (login, password) или (None, None).
+    """
+    if not user.login or not user.password_encrypted:
+        return None, None
+    from ..encryption import decrypt_password
+    try:
+        password = decrypt_password(user.password_encrypted)
+        return user.login, password
+    except Exception as e:
+        logger.warning(f"Failed to decrypt password for user {user.user_id}: {e}")
+        return None, None
+
+
+def _wipe_password(password: str):
+    """Затереть пароль из памяти."""
+    try:
+        password = "\x00" * len(password)
+        del password
+    except Exception:
+        pass
+
 class NotificationService:
     """
     Сервис фоновых уведомлений.
@@ -267,18 +294,22 @@ class NotificationService:
         
         marked_count = 0
         for user in users:
-            if not user.login or not user.password or not user.marks_enabled:
+            if not user.login or not user.password_encrypted or not user.marks_enabled:
                 continue
             try:
-                children = await get_children_async(user.login, user.password)
+                login, password = _safe_decrypt(user)
+                if not login:
+                    continue
+                children = await get_children_async(login, password)
                 if not children:
+                    _wipe_password(password)
                     continue
                 
                 today = date.today()
                 start = today - timedelta(days=self.MARKS_CHECK_DAYS)
                 
                 timetable = await get_timetable_for_children(
-                    user.login, user.password, children, start, today
+                    login, password, children, start, today
                 )
                 
                 for child in children:
@@ -291,7 +322,7 @@ class NotificationService:
                                 marked_count += 1
                 
                 # Также фиксируем текущие визиты питания как «уже виденные»
-                food_info = await get_food_for_children(user.login, user.password, children)
+                food_info = await get_food_for_children(login, password, children)
                 today_str = today.strftime("%Y-%m-%d")
                 for child in children:
                     info = food_info.get(child.id)
@@ -340,16 +371,22 @@ class NotificationService:
     
     async def _process_user(self, user: UserConfig) -> None:
         """Обработка уведомлений для одного пользователя."""
-        if not user.login or not user.password:
+        if not user.login or not user.password_encrypted:
+            return
+        
+        login, password = _safe_decrypt(user)
+        if not login or not password:
             return
         
         try:
-            children = await get_children_async(user.login, user.password)
+            children = await get_children_async(login, password)
         except Exception as e:
             logger.warning(f"Failed to get children for user {user.chat_id}: {e}")
+            _wipe_password(password)
             return
         
         if not children:
+            _wipe_password(password)
             return
         
         logger.info(
@@ -360,31 +397,35 @@ class NotificationService:
         
         # Уведомления о балансе (только когда ниже порога)
         if user.enabled:
-            await self._check_balance_notifications(user, children)
+            await self._check_balance_notifications(user, children, login, password)
         
         # Уведомления об оценках
         if user.marks_enabled:
-            await self._check_marks_notifications(user, children)
+            await self._check_marks_notifications(user, children, login, password)
         
         # Уведомления о питании
         if user.food_enabled:
-            await self._check_food_notifications(user, children)
+            await self._check_food_notifications(user, children, login, password)
         
         # Уведомления о днях рождения
         if getattr(user, 'birthday_enabled', False):
-            await self._check_birthday_notifications(user, children)
+            await self._check_birthday_notifications(user, children, login, password)
+        
+        _wipe_password(password)
     
     async def _check_balance_notifications(
         self,
         user: UserConfig,
-        children: List[Child]
+        children: List[Child],
+        login: str,
+        password: str
     ) -> None:
         """
         Проверка и отправка уведомлений о балансе.
         Уведомление приходит ТОЛЬКО когда баланс упал ниже порога.
         """
         try:
-            food_info = await get_food_for_children(user.login, user.password, children)
+            food_info = await get_food_for_children(login, password, children)
             thresholds = await get_all_thresholds_for_chat(user.chat_id)
             
             alerts = []
@@ -433,7 +474,9 @@ class NotificationService:
     async def _check_marks_notifications(
         self,
         user: UserConfig,
-        children: List[Child]
+        children: List[Child],
+        login: str,
+        password: str
     ) -> None:
         """Проверка и отправка уведомлений о новых оценках."""
         try:
@@ -441,7 +484,7 @@ class NotificationService:
             start = today - timedelta(days=self.MARKS_CHECK_DAYS)
             
             timetable = await get_timetable_for_children(
-                user.login, user.password, children, start, today
+                login, password, children, start, today
             )
             
             all_marks: List[dict] = []
@@ -490,7 +533,9 @@ class NotificationService:
     async def _check_food_notifications(
         self,
         user: UserConfig,
-        children: List[Child]
+        children: List[Child],
+        login: str,
+        password: str
     ) -> None:
         """
         Проверка и отправка уведомлений о питании.
@@ -509,7 +554,7 @@ class NotificationService:
             today = date.today()
             today_str = today.strftime("%Y-%m-%d")
             
-            food_info = await get_food_for_children(user.login, user.password, children)
+            food_info = await get_food_for_children(login, password, children)
             
             logger.info(f"Food check for user {user.chat_id}, date={today_str}, children={len(children)}")
             
@@ -666,7 +711,9 @@ class NotificationService:
     async def _check_birthday_notifications(
         self,
         user: UserConfig,
-        children: List[Child]
+        children: List[Child],
+        login: str,
+        password: str
     ) -> None:
         """
         Проверка и отправка уведомлений о днях рождения одноклассников.
@@ -720,7 +767,7 @@ class NotificationService:
         # Получаем одноклассников
         try:
             classmates = await get_classmates_for_child(
-                user.login, user.password, child_idx
+                login, password, child_idx
             )
         except Exception as e:
             logger.warning(f"Failed to fetch classmates for child {child.id}: {e}")
@@ -781,7 +828,7 @@ class NotificationService:
         # Получаем одноклассников
         try:
             classmates = await get_classmates_for_child(
-                user.login, user.password, child_idx
+                login, password, child_idx
             )
         except Exception as e:
             logger.warning(f"Failed to fetch classmates for child {child.id}: {e}")
@@ -830,3 +877,4 @@ class NotificationService:
         """Получить день недели (0=Mon, 6=Sun) из настроек."""
         settings = await get_birthday_settings(chat_id, child_id)
         return settings.get("notify_weekday", 1)
+

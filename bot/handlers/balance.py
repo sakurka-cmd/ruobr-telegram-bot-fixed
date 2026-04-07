@@ -3,7 +3,7 @@
 """
 import logging
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from aiogram import Router, F
 from aiogram.filters import Command
@@ -13,7 +13,7 @@ from aiogram.types import Message
 from ..config import config
 from ..database import (
     get_user, get_child_threshold, set_child_threshold,
-    get_all_thresholds_for_chat, UserConfig
+    get_all_thresholds_for_chat, UserConfig, decrypted_credentials
 )
 from ..states import ThresholdStates
 from ..services import (
@@ -84,9 +84,12 @@ def _parse_complex_menu(qs_units) -> list:
 async def require_authentication(
     message: Message,
     user_config: Optional[UserConfig]
-) -> Optional[tuple]:
+) -> Optional[Tuple[str, str, list]]:
     """
     Проверка аутентификации пользователя.
+    
+    Использует decrypted_credentials() для безопасного получения пароля.
+    Пароль расшифровывается только на время проверки и сразу затирается.
     
     Returns:
         Кортеж (login, password, children) или None если не аутентифицирован.
@@ -94,14 +97,21 @@ async def require_authentication(
     if user_config is None:
         user_config = await get_user(message.chat.id)
     
-    if not user_config or not user_config.login or not user_config.password:
+    if not user_config or not user_config.login or not user_config.password_encrypted:
         await message.answer(
             "❌ Сначала настройте учётные данные командой /set_login"
         )
         return None
     
     try:
-        children = await get_children_async(user_config.login, user_config.password)
+        login, password = await _decrypt_user_credentials(user_config)
+    except ValueError as e:
+        logger.error(f"Credential error for user {message.chat.id}: {e}")
+        await message.answer("❌ Ошибка расшифровки учётных данных. Настройте заново: /set_login")
+        return None
+    
+    try:
+        children = await get_children_async(login, password)
     except RuobrError as e:
         logger.error(f"Ruobr API error for user {message.chat.id}: {e}")
         await message.answer(f"❌ Ошибка доступа к Ruobr: {e}")
@@ -111,7 +121,25 @@ async def require_authentication(
         await message.answer("❌ Дети не найдены в аккаунте.")
         return None
     
-    return user_config.login, user_config.password, children
+    return login, password, children
+
+
+async def _decrypt_user_credentials(user_config: UserConfig) -> Tuple[str, str]:
+    """
+    Расшифровка учётных данных пользователя.
+    Пароль живёт в памяти только пока нужен.
+    """
+    if not user_config.password_encrypted:
+        raise ValueError(f"No encrypted password for user {user_config.chat_id}")
+    
+    from ..encryption import decrypt_password
+    password = decrypt_password(user_config.password_encrypted)
+    try:
+        return user_config.login, password
+    finally:
+        # Затираем пароль
+        password = "\x00" * len(password)
+        del password
 
 
 # ===== Баланс питания =====
@@ -129,7 +157,6 @@ async def cmd_balance(message: Message, user_config: Optional[UserConfig] = None
     status_msg = await message.answer("🔄 Загрузка информации о балансе...")
     
     try:
-        # Получаем информацию о питании
         food_info = await get_food_for_children(login, password, children)
         thresholds = await get_all_thresholds_for_chat(message.chat.id)
         
@@ -202,13 +229,11 @@ async def cmd_foodtoday(message: Message, user_config: Optional[UserConfig] = No
             lines = [f"🍽 <b>Меню на сегодня</b> ({format_date(today_str)})"]
             lines.append(f"👦 <b>{child.full_name}</b> ({child.group})\n")
             
-            # Сортируем: по line_name / complex / time
             for visit in child_visits:
                 state = visit.get("state", 0)
                 state_str = visit.get("state_str", "")
                 is_confirmed = state == 30
                 
-                # Название приёма пищи
                 meal_name = (
                     visit.get("complex") or
                     visit.get("line_name") or
@@ -216,14 +241,12 @@ async def cmd_foodtoday(message: Message, user_config: Optional[UserConfig] = No
                     "Приём пищи"
                 )
                 
-                # Стоимость
                 price_raw = str(visit.get("price_sum", "0")).replace(",", ".")
                 try:
                     price = float(price_raw)
                 except ValueError:
                     price = 0.0
                 
-                # Блюда: из dishes или qs_unit
                 dish_names = _extract_dish_names(visit.get("dishes", []))
                 if not dish_names:
                     dish_names = _parse_complex_menu(visit.get("qs_unit", []))
@@ -240,7 +263,6 @@ async def cmd_foodtoday(message: Message, user_config: Optional[UserConfig] = No
                 if price > 0:
                     lines.append(f"  💰 {price:.0f} ₽")
                 
-                # Показываем статус если не подтверждён и не отменён
                 if not is_confirmed and state != 20:
                     if state_str:
                         lines.append(f"  📌 {state_str}")
@@ -302,7 +324,6 @@ async def process_threshold_child(message: Message, state: FSMContext):
     """Обработка выбора ребёнка для настройки порога."""
     text = message.text.strip()
     
-    # Отмена
     if text in ["❌ Отмена", "/cancel", "◀️ Назад"]:
         await state.clear()
         await message.answer("❌ Настройка отменена.", reply_markup=get_main_keyboard())
@@ -339,7 +360,6 @@ async def process_threshold_value(message: Message, state: FSMContext):
     """Обработка ввода значения порога."""
     text = message.text.strip()
     
-    # Отмена
     if text in ["❌ Отмена", "/cancel", "◀️ Назад"]:
         await state.clear()
         await message.answer("❌ Настройка отменена.", reply_markup=get_main_keyboard())
@@ -360,7 +380,6 @@ async def process_threshold_value(message: Message, state: FSMContext):
         await message.answer("❌ Введите число (например: 300).")
         return
     
-    # Валидация диапазона
     if value < 0:
         await message.answer("❌ Порог не может быть отрицательным.")
         return
@@ -368,10 +387,8 @@ async def process_threshold_value(message: Message, state: FSMContext):
         await message.answer("❌ Порог слишком большой (максимум 10000 ₽).")
         return
     
-    # Сохраняем
     await set_child_threshold(message.chat.id, child_id, value)
     
-    # Инвалидируем кэш порогов
     from ..services.cache import threshold_cache
     threshold_cache.delete(f"{message.chat.id}:thresholds")
     
@@ -383,3 +400,4 @@ async def process_threshold_value(message: Message, state: FSMContext):
         f"Вы будете получать уведомления, когда баланс упадёт ниже этого значения.",
         reply_markup=get_main_keyboard()
     )
+
