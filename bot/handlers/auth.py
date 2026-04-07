@@ -205,6 +205,10 @@ async def process_password(message: Message, state: FSMContext):
         # Сохраняем учётные данные
         await create_or_update_user(message.chat.id, login=login, password=password)
         
+        # Инвалидируем кэш детей (новые данные — может быть другой список детей)
+        from ..services.cache import invalidate_children_cache
+        invalidate_children_cache(login)
+        
         # Отправляем клавиатуру отдельным сообщением
         await message.answer("🏠 Главное меню", reply_markup=get_main_keyboard())
         

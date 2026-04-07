@@ -15,6 +15,7 @@ from aiosqlite import Connection, Cursor
 
 from .config import config
 from .encryption import encrypt_password, decrypt_password
+from .services.cache import invalidate_children_cache
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +315,10 @@ async def create_or_update_user(
             )
         
         await conn.commit()
+    
+    # Инвалидируем кэш детей при изменении пароля
+    if password is not None and login:
+        invalidate_children_cache(login)
     
     return await get_user(chat_id)
 

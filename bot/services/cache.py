@@ -177,7 +177,7 @@ class MemoryCache(Generic[T]):
 # Глобальные кэши для разных типов данных
 
 # Кэш списка детей (долгий TTL, редко меняется)
-children_cache = MemoryCache[list](ttl_seconds=3600, max_size=500)
+children_cache = MemoryCache[list](ttl_seconds=86400, max_size=500)
 
 # Кэш расписания (средний TTL)
 timetable_cache = MemoryCache[list](ttl_seconds=config.cache_ttl_seconds, max_size=1000)
@@ -202,6 +202,33 @@ def get_cache_key(chat_id: int, *args) -> str:
     """
     parts = [str(chat_id)] + [str(arg) for arg in args]
     return ":".join(parts)
+
+
+def invalidate_children_cache(login: str) -> int:
+    """
+    Инвалидация кэша списка детей для конкретного логина.
+    
+    Args:
+        login: Логин пользователя.
+        
+    Returns:
+        Количество удалённых записей.
+    """
+    cache_key = f"{login}:children"
+    deleted = children_cache.delete(cache_key)
+    if deleted:
+        logger.info(f"Children cache invalidated for {login}")
+    return 1 if deleted else 0
+
+
+def invalidate_children_cache(login: str) -> None:
+    """
+    Инвалидация кэша списка детей для конкретного логина.
+    Вызывать при изменении учётных данных пользователя.
+    """
+    if login:
+        children_cache.delete(f"children:{login}")
+        logger.debug(f"Invalidated children cache for login {login}")
 
 
 async def invalidate_user_cache(chat_id: int) -> None:

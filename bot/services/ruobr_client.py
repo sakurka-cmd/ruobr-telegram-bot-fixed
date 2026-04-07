@@ -676,10 +676,33 @@ class RuobrClient:
         return SchoolGuide.from_dict(result)
 
 
-async def get_children_async(login: str, password: str) -> List[Child]:
-    """Удобная функция для получения списка детей."""
+from .cache import children_cache
+
+
+async def get_children_async(login: str, password: str, *, use_cache: bool = True) -> List[Child]:
+    """
+    Удобная функция для получения списка детей.
+    
+    Кэширует результат на 24 часа (86400 сек). Кэш инвалидируется при:
+    - set_login (новые учётные данные)
+    - create_or_update_user с новым паролем
+    """
+    cache_key = f"{login}:children"
+    
+    if use_cache:
+        cached = children_cache.get(cache_key)
+        if cached is not None:
+            logger.debug(f"Children cache hit for {login}")
+            return cached
+    
     async with RuobrClient(login, password) as client:
-        return await client.get_children()
+        children = await client.get_children()
+    
+    # Сохраняем в кэш на 24 часа
+    children_cache.set(cache_key, children, ttl=86400)
+    logger.debug(f"Children fetched and cached for {login}: {len(children)} child(ren)")
+    
+    return children
 
 
 async def get_food_for_children(
