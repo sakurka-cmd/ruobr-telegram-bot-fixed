@@ -210,7 +210,8 @@ async def cmd_foodtoday(message: Message, user_config: Optional[UserConfig] = No
         
         food_info = await get_food_for_children(login, password, children)
         
-        found = False
+        # Собираем питание всех детей за сегодня
+        all_children_food = []
         
         for child in children:
             info = food_info.get(child.id)
@@ -227,7 +228,17 @@ async def cmd_foodtoday(message: Message, user_config: Optional[UserConfig] = No
             if not child_visits:
                 continue
             
-            found = True
+            all_children_food.append((child, child_visits))
+        
+        if not all_children_food:
+            await status_msg.edit_text(
+                f"ℹ️ На сегодня ({format_date(today_str)}) "
+                f"нет записей о питании."
+            )
+            return
+        
+        # Формируем сообщения по каждому ребёнку
+        for child_idx, (child, child_visits) in enumerate(all_children_food):
             lines = [f"🍽 <b>Меню на сегодня</b> ({format_date(today_str)})"]
             lines.append(f"👦 <b>{child.full_name}</b> ({child.group})\n")
             
@@ -274,14 +285,13 @@ async def cmd_foodtoday(message: Message, user_config: Optional[UserConfig] = No
                 lines.append("")
             
             text = truncate_text("\n".join(lines))
-            await status_msg.edit_text(text)
-            return
-        
-        if not found:
-            await status_msg.edit_text(
-                f"ℹ️ На сегодня ({format_date(today_str)}) "
-                f"нет записей о питании."
-            )
+            
+            if child_idx == 0:
+                # Первого ребёнка — edit (заменяем "Загрузка...")
+                await status_msg.edit_text(text)
+            else:
+                # Остальных — отдельными сообщениями
+                await message.answer(text)
             
     except Exception as e:
         logger.error(f"Error getting food today for user {message.chat.id}: {e}")
