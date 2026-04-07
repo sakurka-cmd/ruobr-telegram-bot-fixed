@@ -643,9 +643,9 @@ class NotificationService:
                     continue
 
                 if mode == "tomorrow":
-                    await self._process_tomorrow_mode(user, child, child_idx, now, tz)
+                    await self._process_tomorrow_mode(user, child, child_idx, now, tz, login, password)
                 elif mode == "weekly":
-                    await self._process_weekly_mode(user, child, child_idx, now, tz)
+                    await self._process_weekly_mode(user, child, child_idx, now, tz, login, password)
 
         except Exception as e:
             logger.error(f"Error checking birthday notifications for user {user.chat_id}: {e}", exc_info=True)
@@ -656,7 +656,9 @@ class NotificationService:
         child: Child,
         child_idx: int,
         now: datetime,
-        tz: timezone
+        tz: timezone,
+        login: str,
+        password: str
     ) -> None:
         """Обработка режима «завтра» — уведомляет о ДР завтрашнего дня."""
         tomorrow = (now + timedelta(days=1)).date()
@@ -710,7 +712,9 @@ class NotificationService:
         child: Child,
         child_idx: int,
         now: datetime,
-        tz: timezone
+        tz: timezone,
+        login: str,
+        password: str
     ) -> None:
         """Обработка еженедельного режима — уведомляет о ДР на предстоящей неделе."""
         notify_weekday = await self._get_weekday_from_settings(user.chat_id, child.id)
