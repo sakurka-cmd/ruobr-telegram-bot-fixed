@@ -3,11 +3,10 @@ version: '3.8'
 services:
   bot:
     build: .
-    container_name: ruobr-bot
+    container_name: ruobr-bot-dev
     restart: unless-stopped
     network_mode: host
     env_file:
       - .env
     volumes:
-      - ./data-prod:/app/data
-
+      - ./data:/app/data
