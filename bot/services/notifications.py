@@ -12,6 +12,7 @@ from aiogram.exceptions import TelegramAPIError
 
 from ..config import config
 from ..credentials import safe_decrypt
+from ..services.cache import birthday_settings_cache
 from ..database import (
     get_all_enabled_users,
     get_all_thresholds_for_chat,
@@ -636,7 +637,12 @@ class NotificationService:
             self._last_birthday_check_hour[user.chat_id] = current_hour
 
             for child_idx, child in enumerate(children):
-                settings = await get_birthday_settings(user.chat_id, child.id)
+                # Используем кеш настроек ДР (TTL 24ч)
+                bd_cache_key = f"bd_settings:{user.chat_id}:{child.id}"
+                settings = birthday_settings_cache.get(bd_cache_key)
+                if settings is None:
+                    settings = await get_birthday_settings(user.chat_id, child.id)
+                    birthday_settings_cache.set(bd_cache_key, settings)
                 if not settings.get("enabled", False):
                     continue
 

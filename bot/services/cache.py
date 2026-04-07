@@ -188,6 +188,10 @@ food_cache = MemoryCache[dict](ttl_seconds=60, max_size=500)
 # Кэш порогов баланса
 threshold_cache = MemoryCache[dict](ttl_seconds=600, max_size=500)
 
+# Кэш настроек уведомлений о днях рождения (долгий TTL, меняются редко)
+birthday_settings_cache = MemoryCache[dict](ttl_seconds=86400, max_size=500)
+
+
 
 def get_cache_key(chat_id: int, *args) -> str:
     """
@@ -231,6 +235,16 @@ def invalidate_children_cache(login: str) -> None:
         logger.debug(f"Invalidated children cache for login {login}")
 
 
+def invalidate_birthday_cache(chat_id: int, child_id: int) -> None:
+    """
+    Инвалидация кэша настроек ДР для конкретного ребёнка.
+    Вызывать при изменении настроек уведомлений о днях рождения.
+    """
+    cache_key = f"bd_settings:{chat_id}:{child_id}"
+    birthday_settings_cache.delete(cache_key)
+    logger.debug(f"Invalidated birthday settings cache for chat {chat_id}, child {child_id}")
+
+
 async def invalidate_user_cache(chat_id: int) -> None:
     """
     Инвалидация всего кэша пользователя.
@@ -241,7 +255,7 @@ async def invalidate_user_cache(chat_id: int) -> None:
     prefix = f"{chat_id}:"
     
     # Инвалидируем во всех кэшах
-    for cache in [children_cache, timetable_cache, food_cache, threshold_cache]:
+    for cache in [children_cache, timetable_cache, food_cache, threshold_cache, birthday_settings_cache]:
         keys_to_delete = [
             key for key in cache._cache.keys()
             if key.startswith(prefix)
@@ -263,7 +277,7 @@ async def periodic_cache_cleanup(interval: int = 300) -> None:
         await asyncio.sleep(interval)
         
         total_cleaned = 0
-        for cache in [children_cache, timetable_cache, food_cache, threshold_cache]:
+        for cache in [children_cache, timetable_cache, food_cache, threshold_cache, birthday_settings_cache]:
             total_cleaned += cache.cleanup_expired()
         
         if total_cleaned > 0:
