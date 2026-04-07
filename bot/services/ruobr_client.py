@@ -1,6 +1,8 @@
 """
 Асинхронный клиент для Ruobr API.
 Реализует неблокирующие запросы с повторными попытками и обработкой ошибок.
+Использует AsyncRuobr из ruobr_api для нативных асинхронных запросов
+без блокировки потоков (asyncio.to_thread).
 """
 import asyncio
 import logging
@@ -9,8 +11,13 @@ from datetime import date, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-import aiohttp
-from aiohttp import ClientSession, ClientError, ClientResponseError
+import httpx
+from ruobr_api import AsyncRuobr
+from ruobr_api.exceptions import (
+    AuthenticationException,
+    NoChildrenException,
+    NoSuccessException,
+)
 
 from ..config import config
 
@@ -53,16 +60,16 @@ class Child:
     gender: int
     group: str
     school: str
-    
+
     @property
     def full_name(self) -> str:
         parts = [self.last_name, self.first_name, self.middle_name]
         return " ".join(p for p in parts if p).strip()
-    
+
     @property
     def gender_icon(self) -> str:
         return "♂" if self.gender == 1 else "♀"
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Child':
         return cls(
@@ -84,7 +91,7 @@ class FoodInfo:
     balance: float
     has_food: bool
     visits: List[Dict[str, Any]]
-    
+
     @classmethod
     def from_dict(cls, child_id: int, data: Dict[str, Any]) -> 'FoodInfo':
         balance_raw = str(data.get("balance", "0")).replace(",", ".")
@@ -92,11 +99,11 @@ class FoodInfo:
             balance = float(balance_raw)
         except ValueError:
             balance = 0.0
-        
+
         # Извлекаем визиты из различных возможных ключей
         # API может возвращать данные под разными именами
         visits: List[Dict[str, Any]] = []
-        
+
         # Приоритетный порядок проверки ключей
         visit_keys = ["vizit", "visit", "visits", "orders", "items"]
         for key in visit_keys:
@@ -105,7 +112,7 @@ class FoodInfo:
                 visits = val
                 logger.info(f"FoodInfo: found visits under key '{key}' ({len(visits)} items)")
                 break
-        
+
         # Если не нашли по известным ключам — ищем любой список со словарями,
         # содержащими поля характерные для визитов питания
         if not visits:
@@ -119,7 +126,7 @@ class FoodInfo:
                         visits = value
                         logger.info(f"FoodInfo: auto-detected visits under key '{key}' ({len(visits)} items), fields: {list(first_keys)}")
                         break
-        
+
         if not visits:
             # Логируем структуру данных для отладки
             logger.warning(
@@ -137,7 +144,7 @@ class FoodInfo:
                     logger.info(f"  {key}: dict, keys: {list(value.keys())[:10]}")
                 else:
                     logger.info(f"  {key}: {type(value).__name__} = {str(value)[:200]}")
-        
+
         return cls(
             child_id=child_id,
             balance=balance,
@@ -157,7 +164,7 @@ class Lesson:
     room: str
     homework: List[Dict[str, Any]]
     marks: List[Dict[str, Any]]
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Lesson':
         return cls(
@@ -181,15 +188,15 @@ class Classmate:
     birth_date: str
     gender: int  # 1 - мальчик, 2 - девочка
     avatar: str
-    
+
     @property
     def full_name(self) -> str:
         return f"{self.last_name} {self.first_name} {self.middle_name}".strip()
-    
+
     @property
     def gender_icon(self) -> str:
         return "♂" if self.gender == 1 else "♀"
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Classmate':
         return cls(
@@ -209,7 +216,7 @@ class AchievementDirection:
     count: int
     percent: int
     programs: List[Dict[str, Any]]
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AchievementDirection':
         # Программы могут быть вложены в направление под разными ключами
@@ -243,7 +250,7 @@ class CertificateProgram:
     direction: str          # направление из do_direction (если сопоставлено)
     module_name: str        # module_name
     territory: str          # program_territory
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'CertificateProgram':
         # Стоимость может приходить под разными ключами
@@ -261,7 +268,7 @@ class CertificateProgram:
                 sum_str = f"{val:,.2f}".replace(",", " ")
             except (ValueError, TypeError):
                 pass
-        
+
         return cls(
             name=data.get("program_name_short", "") or data.get("text", ""),
             name_full=data.get("program_name_full", ""),
@@ -275,7 +282,7 @@ class CertificateProgram:
             module_name=data.get("module_name", ""),
             territory=data.get("program_territory", "")
         )
-    
+
     @property
     def is_active(self) -> bool:
         """Активная программа (обучается, зачислен)."""
@@ -297,7 +304,7 @@ class Certificate:
     territory: str                  # cert_territory
     programs_active: List[CertificateProgram]   # petition_good
     programs_completed: List[CertificateProgram]  # petition_bad
-    
+
     @staticmethod
     def _fmt_money(val) -> str:
         """Форматирование денежного значения."""
@@ -309,18 +316,18 @@ class Certificate:
             return f"{v:,.2f}".replace(",", " ")
         except (ValueError, TypeError):
             return s
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Certificate':
         programs_active = [
-            CertificateProgram.from_dict(p) 
+            CertificateProgram.from_dict(p)
             for p in (data.get("petition_good", []) or [])
         ]
         programs_completed = [
-            CertificateProgram.from_dict(p) 
+            CertificateProgram.from_dict(p)
             for p in (data.get("petition_bad", []) or [])
         ]
-        
+
         return cls(
             number=str(data.get("number_cert", "") or ""),
             nominal=cls._fmt_money(data.get("rmc_nominal", "")),
@@ -331,7 +338,7 @@ class Certificate:
             programs_active=programs_active,
             programs_completed=programs_completed
         )
-    
+
     @property
     def all_programs(self) -> List[CertificateProgram]:
         return self.programs_active + self.programs_completed
@@ -343,11 +350,11 @@ class Achievements:
     directions: List[AchievementDirection]
     projects: List[Dict[str, Any]]
     gto_id: str
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Achievements':
         directions = [
-            AchievementDirection.from_dict(d) 
+            AchievementDirection.from_dict(d)
             for d in data.get("do_direction", [])
         ]
         return cls(
@@ -363,7 +370,7 @@ class Teacher:
     name: str
     subject: str
     user_id: int
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Teacher':
         # Пробуем получить полное ФИО из разных полей
@@ -389,11 +396,11 @@ class SchoolGuide:
     phone: str
     url: str
     teachers: List[Teacher]
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'SchoolGuide':
         teachers = [
-            Teacher.from_dict(t) 
+            Teacher.from_dict(t)
             for t in data.get("teacher_list", [])
         ]
         return cls(
@@ -408,46 +415,60 @@ class SchoolGuide:
 class RuobrClient:
     """
     Асинхронный клиент для Ruobr API.
-    
-    Оборачивает синхронную библиотеку ruobr_api в асинхронные вызовы
-    через asyncio.to_thread для неблокирующей работы.
+
+    Использует AsyncRuobr из ruobr_api для нативных асинхронных запросов
+    без блокировки потоков (asyncio.to_thread).
+
+    Авторизация выполняется один раз при входе в контекстный менеджер.
+    Последующие запросы переиспользуют сессию без повторного логина.
     """
-    
-    BASE_URL = "https://cabinet.ruobr.ru"
+
     API_TIMEOUT = 30  # Таймаут API запросов в секундах
-    
+
     def __init__(
         self,
         login: str,
         password: str,
-        session: Optional[ClientSession] = None,
         max_retries: int = 3,
         retry_delay: float = 1.0
     ):
         self._login = login
         self._password = password
-        self._session = session
-        self._own_session = session is None
         self._max_retries = max_retries
         self._retry_delay = retry_delay
-        self._child_index = 0
-    
+        self._client: Optional[AsyncRuobr] = None
+
     async def __aenter__(self) -> 'RuobrClient':
-        if self._own_session:
-            self._session = aiohttp.ClientSession(
-                base_url=self.BASE_URL,
-                timeout=aiohttp.ClientTimeout(total=30)
+        """
+        Вход в контекст: создаёт AsyncRuobr и авторизуется один раз.
+        Все последующие запросы в этом контексте пропускают повторную авторизацию.
+        """
+        self._client = AsyncRuobr(self._login, self._password)
+        try:
+            await asyncio.wait_for(
+                self._client.get_user(),
+                timeout=self.API_TIMEOUT
             )
+        except AuthenticationException as e:
+            self._client = None
+            raise AuthenticationError(f"Authentication failed: {e}")
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            self._client = None
+            raise NetworkError(f"Auth network error: {e}")
+        except Exception as e:
+            self._client = None
+            raise NetworkError(f"Auth failed: {e}")
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        if self._own_session and self._session:
-            await self._session.close()
-    
+        """Выход из контекста: освобождает клиент."""
+        self._client = None
+
     def set_child(self, index: int) -> None:
         """Установка индекса текущего ребёнка."""
-        self._child_index = index
-    
+        if self._client:
+            self._client.child = index
+
     async def _request_with_retry(
         self,
         method: str,
@@ -456,132 +477,135 @@ class RuobrClient:
     ) -> Dict[str, Any]:
         """
         Выполнение запроса с повторными попытками.
-        
+        Не блокирует потоки — использует нативный async.
+
         Args:
             method: HTTP метод.
             endpoint: URL endpoint.
             **kwargs: Параметры запроса.
-            
+
         Returns:
             Ответ API в виде словаря.
-            
+
         Raises:
-            AuthenticationError: При ошибке аутентификации.
-            NetworkError: При сетевой ошибке.
-            RuobrError: При других ошибках API.
+            AuthenticationError: При ошибке аутентификации (без повтора).
+            NetworkError: При сетевой ошибке после всех попыток.
+            RuobrError: При ошибке API после всех попыток.
         """
         last_error = None
-        
+
         for attempt in range(self._max_retries):
             try:
-                # Используем синхронную библиотеку через to_thread с таймаутом
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self._sync_request,
-                        method,
-                        endpoint,
-                        **kwargs
-                    ),
-                    timeout=self.API_TIMEOUT
-                )
-                return result
+                coro = self._get_coroutine(endpoint, **kwargs)
+                result = await asyncio.wait_for(coro, timeout=self.API_TIMEOUT)
+                return result if isinstance(result, (dict, list)) else {}
+
             except asyncio.TimeoutError:
                 last_error = NetworkError(f"Request timeout after {self.API_TIMEOUT}s")
                 logger.warning(f"Request timeout (attempt {attempt + 1}/{self._max_retries})")
                 if attempt < self._max_retries - 1:
                     delay = self._retry_delay * (2 ** attempt)
                     await asyncio.sleep(delay)
-            except AuthenticationError:
-                raise  # Не повторяем при ошибке аутентификации
-            except (NetworkError, ClientError) as e:
-                last_error = e
+
+            except AuthenticationException as e:
+                # Ошибка аутентификации — не повторяем
+                raise AuthenticationError(str(e))
+
+            except NoChildrenException as e:
+                # Нет детей на аккаунте — не повторяем
+                raise RuobrError(str(e))
+
+            except NoSuccessException as e:
+                # API вернул success=false — повторяем (может быть временной ошибкой)
+                last_error = RuobrError(str(e))
+                logger.warning(
+                    f"API error (attempt {attempt + 1}/{self._max_retries}): {e}"
+                )
                 if attempt < self._max_retries - 1:
-                    delay = self._retry_delay * (2 ** attempt)  # Exponential backoff
-                    logger.warning(
-                        f"Request failed (attempt {attempt + 1}/{self._max_retries}), "
-                        f"retrying in {delay}s: {e}"
-                    )
+                    delay = self._retry_delay * (2 ** attempt)
                     await asyncio.sleep(delay)
+
+            except (httpx.TimeoutException, httpx.ConnectError,
+                    httpx.ReadError, httpx.WriteError) as e:
+                # Сетевая ошибка на уровне httpx — повторяем
+                last_error = NetworkError(f"Network error: {e}")
+                logger.warning(
+                    f"Network error (attempt {attempt + 1}/{self._max_retries}): {e}"
+                )
+                if attempt < self._max_retries - 1:
+                    delay = self._retry_delay * (2 ** attempt)
+                    await asyncio.sleep(delay)
+
             except Exception as e:
-                last_error = e
+                # Неизвестная ошибка — логируем и прерываем повторы
+                last_error = RuobrError(f"Unexpected API error: {e}")
                 logger.error(f"Unexpected error during request: {e}")
                 break
-        
-        raise NetworkError(f"Request failed after {self._max_retries} attempts: {last_error}")
-    
-    def _sync_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
+
+        raise last_error or NetworkError(
+            f"Request failed after {self._max_retries} attempts"
+        )
+
+    def _get_coroutine(self, endpoint: str, **kwargs):
         """
-        Синхронный запрос через ruobr_api.
-        Выполняется в отдельном потоке через to_thread.
+        Возвращает корутину для соответствующего эндпоинта AsyncRuobr.
+        Авторизация уже выполнена в __aenter__, поэтому каждый вызов
+        делает только один HTTP-запрос к API.
         """
-        from ruobr_api import Ruobr
-        
-        try:
-            client = Ruobr(self._login, self._password)
-            client.child = self._child_index
-            
-            if endpoint == "children":
-                result = client.get_children()
-            elif endpoint == "food":
-                result = client.get_food_info()
-            elif endpoint == "timetable":
-                start = kwargs.get("start")
-                end = kwargs.get("end")
-                result = client.get_timetable(
-                    start.strftime("%Y-%m-%d") if isinstance(start, date) else start,
-                    end.strftime("%Y-%m-%d") if isinstance(end, date) else end
-                )
-            elif endpoint == "classmates":
-                result = client.get_classmates()
-            elif endpoint == "achievements":
-                result = client.get_achievements()
-            elif endpoint == "certificate":
-                result = client.get_certificate()
-            elif endpoint == "guide":
-                result = client.get_guide()
-            else:
-                raise RuobrError(f"Unknown endpoint: {endpoint}")
-            
-            return result if isinstance(result, (dict, list)) else {}
-            
-        except Exception as e:
-            error_str = str(e).lower()
-            if "auth" in error_str or "login" in error_str or "password" in error_str:
-                raise AuthenticationError(f"Authentication failed: {e}")
-            if "network" in error_str or "connection" in error_str or "timeout" in error_str:
-                raise NetworkError(f"Network error: {e}")
-            raise RuobrError(f"API error: {e}")
-    
+        if endpoint == "children":
+            return self._client.get_children()
+        elif endpoint == "food":
+            return self._client.get_food_info()
+        elif endpoint == "timetable":
+            start = kwargs.get("start")
+            end = kwargs.get("end")
+            return self._client.get_timetable(
+                start.strftime("%Y-%m-%d") if isinstance(start, date) else start,
+                end.strftime("%Y-%m-%d") if isinstance(end, date) else end
+            )
+        elif endpoint == "classmates":
+            return self._client.get_classmates()
+        elif endpoint == "achievements":
+            return self._client.get_achievements()
+        elif endpoint == "certificate":
+            return self._client.get_certificate()
+        elif endpoint == "guide":
+            return self._client.get_guide()
+        else:
+            raise RuobrError(f"Unknown endpoint: {endpoint}")
+
     async def get_children(self) -> List[Child]:
         """
         Получение списка детей.
-        
+
         Returns:
             Список объектов Child.
         """
         result = await self._request_with_retry("GET", "children")
-        
+
         if not isinstance(result, list):
             logger.warning(f"Unexpected children response type: {type(result)}")
             return []
-        
+
         return [Child.from_dict(child) for child in result]
-    
+
     async def get_food_info(self, child_id: Optional[int] = None) -> FoodInfo:
         """
         Получение информации о питании для текущего ребёнка.
-        
+
         Args:
-            child_id: Реальный ID ребёнка из API. Если не указан, используется индекс.
-        
+            child_id: Реальный ID ребёнка из API. Если не указан, используется текущий индекс.
+
         Returns:
             Объект FoodInfo.
         """
         result = await self._request_with_retry("GET", "food")
-        
-        effective_id = child_id if child_id is not None else self._child_index
+
+        effective_id = child_id if child_id is not None else (
+            self._client.child if self._client else 0
+        )
         return FoodInfo.from_dict(effective_id, result if isinstance(result, dict) else {})
-    
+
     async def get_timetable(
         self,
         start: date,
@@ -589,90 +613,90 @@ class RuobrClient:
     ) -> List[Lesson]:
         """
         Получение расписания.
-        
+
         Args:
             start: Начальная дата.
             end: Конечная дата.
-            
+
         Returns:
             Список объектов Lesson.
         """
         result = await self._request_with_retry(
             "GET", "timetable", start=start, end=end
         )
-        
+
         if not isinstance(result, list):
             logger.warning(f"Unexpected timetable response type: {type(result)}")
             return []
-        
+
         return [Lesson.from_dict(lesson) for lesson in result]
-    
+
     async def get_classmates(self) -> List[Classmate]:
         """
         Получение списка одноклассников.
-        
+
         Returns:
             Список объектов Classmate.
         """
         result = await self._request_with_retry("GET", "classmates")
-        
+
         if not isinstance(result, list):
             logger.warning(f"Unexpected classmates response type: {type(result)}")
             return []
-        
+
         return [Classmate.from_dict(c) for c in result]
-    
+
     async def get_achievements(self) -> Achievements:
         """
         Получение данных о дополнительном образовании.
-        
+
         Returns:
             Объект Achievements с направлениями и программами.
         """
         result = await self._request_with_retry("GET", "achievements")
-        
+
         if not isinstance(result, dict):
             logger.warning(f"Unexpected achievements response type: {type(result)}")
             return Achievements(directions=[], projects=[], gto_id="")
-        
+
         # Логируем полную структуру для отладки
         import json
         logger.info(f"Achievements raw response: {json.dumps(result, ensure_ascii=False)[:3000]}")
-        
+
         return Achievements.from_dict(result)
-    
+
     async def get_certificate(self) -> Certificate:
         """
         Получение информации о сертификате ПФДО.
-        
+
         Returns:
             Объект Certificate с программами и балансом.
         """
         result = await self._request_with_retry("GET", "certificate")
-        
+
         if not isinstance(result, dict):
             logger.warning(f"Unexpected certificate response type: {type(result)}")
             return Certificate(number="", nominal="", balance="", balance_start="", group_name="", territory="", programs_active=[], programs_completed=[])
-        
+
         # Логируем полную структуру для отладки
         import json
         logger.info(f"Certificate raw response: {json.dumps(result, ensure_ascii=False)[:3000]}")
-        
+
         return Certificate.from_dict(result)
-    
+
     async def get_guide(self) -> SchoolGuide:
         """
         Получение информации о школе.
-        
+
         Returns:
             Объект SchoolGuide.
         """
         result = await self._request_with_retry("GET", "guide")
-        
+
         if not isinstance(result, dict):
             logger.warning(f"Unexpected guide response type: {type(result)}")
             return SchoolGuide(name="", address="", phone="", url="", teachers=[])
-        
+
         return SchoolGuide.from_dict(result)
 
 
@@ -682,26 +706,29 @@ from .cache import children_cache
 async def get_children_async(login: str, password: str, *, use_cache: bool = True) -> List[Child]:
     """
     Удобная функция для получения списка детей.
-    
+
     Кэширует результат на 24 часа (86400 сек). Кэш инвалидируется при:
     - set_login (новые учётные данные)
     - create_or_update_user с новым паролем
+
+    С AsyncRuobr: 1 HTTP-вызов (авторизация через get_user).
+    Данные о детях возвращаются из поля _children без дополнительного запроса.
     """
     cache_key = f"{login}:children"
-    
+
     if use_cache:
         cached = children_cache.get(cache_key)
         if cached is not None:
             logger.debug(f"Children cache hit for {login}")
             return cached
-    
+
     async with RuobrClient(login, password) as client:
         children = await client.get_children()
-    
+
     # Сохраняем в кэш на 24 часа
     children_cache.set(cache_key, children, ttl=86400)
     logger.debug(f"Children fetched and cached for {login}: {len(children)} child(ren)")
-    
+
     return children
 
 
@@ -711,33 +738,45 @@ async def get_food_for_children(
     children: List[Child]
 ) -> Dict[int, FoodInfo]:
     """
-    Получение информации о питании для всех детей параллельно.
-    
+    Получение информации о питании для всех детей.
+
+    Использует один клиент RuobrClient с единой авторизацией.
+    Запросы для разных детей выполняются параллельно через asyncio.gather.
+
     Args:
         login: Логин Ruobr.
         password: Пароль Ruobr.
         children: Список детей.
-        
+
     Returns:
         Словарь {child_id: FoodInfo}.
     """
-    async def fetch_food(child: Child, index: int) -> tuple:
+    food_info: Dict[int, FoodInfo] = {}
+
+    try:
         async with RuobrClient(login, password) as client:
-            client.set_child(index)
-            food = await client.get_food_info(child_id=child.id)
-            return child.id, food
-    
-    tasks = [fetch_food(child, idx) for idx, child in enumerate(children)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    food_info = {}
+
+            async def fetch_food(child: Child, idx: int) -> tuple:
+                # URL вычисляется синхронно (до await), поэтому
+                # параллельное выполнение с разными set_child безопасно
+                client.set_child(idx)
+                food = await client.get_food_info(child_id=child.id)
+                return child.id, food
+
+            tasks = [fetch_food(child, idx) for idx, child in enumerate(children)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    except (AuthenticationError, NetworkError) as e:
+        logger.error(f"Error creating client for food: {e}")
+        return food_info
+
     for result in results:
         if isinstance(result, Exception):
             logger.error(f"Error fetching food info: {result}")
         else:
             child_id, info = result
             food_info[child_id] = info
-    
+
     return food_info
 
 
@@ -749,35 +788,45 @@ async def get_timetable_for_children(
     end: date
 ) -> Dict[int, List[Lesson]]:
     """
-    Получение расписания для всех детей параллельно.
-    
+    Получение расписания для всех детей.
+
+    Использует один клиент RuobrClient с единой авторизацией.
+    Запросы для разных детей выполняются параллельно через asyncio.gather.
+
     Args:
         login: Логин Ruobr.
         password: Пароль Ruobr.
         children: Список детей.
         start: Начальная дата.
         end: Конечная дата.
-        
+
     Returns:
         Словарь {child_id: [Lesson]}.
     """
-    async def fetch_timetable(child: Child, index: int) -> tuple:
+    timetable: Dict[int, List[Lesson]] = {}
+
+    try:
         async with RuobrClient(login, password) as client:
-            client.set_child(index)
-            lessons = await client.get_timetable(start, end)
-            return child.id, lessons
-    
-    tasks = [fetch_timetable(child, idx) for idx, child in enumerate(children)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    timetable = {}
+
+            async def fetch_timetable(child: Child, idx: int) -> tuple:
+                client.set_child(idx)
+                lessons = await client.get_timetable(start, end)
+                return child.id, lessons
+
+            tasks = [fetch_timetable(child, idx) for idx, child in enumerate(children)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    except (AuthenticationError, NetworkError) as e:
+        logger.error(f"Error creating client for timetable: {e}")
+        return timetable
+
     for result in results:
         if isinstance(result, Exception):
             logger.error(f"Error fetching timetable: {result}")
         else:
             child_id, lessons = result
             timetable[child_id] = lessons
-    
+
     return timetable
 
 
@@ -788,12 +837,12 @@ async def get_classmates_for_child(
 ) -> List[Classmate]:
     """
     Получение списка одноклассников для ребёнка.
-    
+
     Args:
         login: Логин Ruobr.
         password: Пароль Ruobr.
         child_index: Индекс ребёнка (0 по умолчанию).
-        
+
     Returns:
         Список объектов Classmate.
     """
@@ -809,12 +858,12 @@ async def get_achievements_for_child(
 ) -> Achievements:
     """
     Получение данных о доп. образовании для ребёнка.
-    
+
     Args:
         login: Логин Ruobr.
         password: Пароль Ruobr.
         child_index: Индекс ребёнка (0 по умолчанию).
-        
+
     Returns:
         Объект Achievements.
     """
@@ -830,12 +879,12 @@ async def get_certificate_for_child(
 ) -> Certificate:
     """
     Получение сертификата ПФДО для ребёнка.
-    
+
     Args:
         login: Логин Ruobr.
         password: Пароль Ruobr.
         child_index: Индекс ребёнка (0 по умолчанию).
-        
+
     Returns:
         Объект Certificate.
     """
@@ -851,12 +900,12 @@ async def get_guide_for_child(
 ) -> SchoolGuide:
     """
     Получение информации о школе для ребёнка.
-    
+
     Args:
         login: Логин Ruobr.
         password: Пароль Ruobr.
         child_index: Индекс ребёнка (0 по умолчанию).
-        
+
     Returns:
         Объект SchoolGuide.
     """
