@@ -208,30 +208,13 @@ def get_cache_key(chat_id: int, *args) -> str:
     return ":".join(parts)
 
 
-def invalidate_children_cache(login: str) -> int:
-    """
-    Инвалидация кэша списка детей для конкретного логина.
-    
-    Args:
-        login: Логин пользователя.
-        
-    Returns:
-        Количество удалённых записей.
-    """
-    cache_key = f"{login}:children"
-    deleted = children_cache.delete(cache_key)
-    if deleted:
-        logger.info(f"Children cache invalidated for {login}")
-    return 1 if deleted else 0
-
-
 def invalidate_children_cache(login: str) -> None:
     """
     Инвалидация кэша списка детей для конкретного логина.
     Вызывать при изменении учётных данных пользователя.
     """
     if login:
-        children_cache.delete(f"children:{login}")
+        children_cache.delete(f"{login}:children")
         logger.debug(f"Invalidated children cache for login {login}")
 
 
