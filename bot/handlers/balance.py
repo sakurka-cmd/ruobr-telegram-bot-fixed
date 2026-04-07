@@ -22,83 +22,15 @@ from ..services import (
     get_timetable_for_children, RuobrError, invalidate_user_cache
 )
 from ..utils.formatters import (
-    format_balance, format_date, truncate_text
+    format_balance, format_date, truncate_text,
+    extract_dish_names, parse_complex_menu
 )
+from ..utils.common import is_navigation_command
 from .auth import get_main_keyboard, get_settings_keyboard
 
 logger = logging.getLogger(__name__)
 
 router = Router()
-
-def _is_navigation_command(text: str) -> bool:
-    """Проверить, является ли текст навигационной командой/кнопкой."""
-    NAV_BUTTONS = {
-        "🎂 Дни рождения", "💰 Порог баланса", "🔑 Изменить логин/пароль",
-        "🔔 Уведомления", "👤 Мой профиль", "◀️ Назад",
-        "💰 Баланс питания", "🍽 Питание сегодня", "📅 Расписание сегодня",
-        "📅 Расписание завтра", "📘 ДЗ на завтра", "⭐ Оценки сегодня",
-        "⚙️ Настройки", "ℹ️ Информация", "👥 Одноклассники",
-        "👩‍🏫 Учителя", "🎓 Доп. образование", "📋 Справка",
-        "❌ Отмена", "/cancel", "/start", "/set_login", "/balance",
-        "/ttoday", "/ttomorrow", "/hwtomorrow", "/markstoday", "/foodtoday",
-        "/set_threshold",
-    }
-    return text.strip() in NAV_BUTTONS
-
-
-
-
-
-def _extract_dish_names(dishes) -> list:
-    """Извлечение названий блюд из списка."""
-    if not dishes or not isinstance(dishes, list):
-        return []
-    names = []
-    for dish in dishes:
-        if isinstance(dish, str):
-            if dish.strip():
-                names.append(dish.strip())
-        elif isinstance(dish, dict):
-            name = (
-                dish.get("text") or
-                dish.get("name") or
-                dish.get("title") or
-                dish.get("dish_name") or
-                dish.get("description") or
-                ""
-            )
-            if name and str(name).strip():
-                names.append(str(name).strip())
-    return names
-
-
-def _parse_complex_menu(qs_units) -> list:
-    """Парсинг комплексного меню из qs_unit."""
-    if not qs_units or not isinstance(qs_units, list) or len(qs_units) == 0:
-        return []
-    unit = qs_units[0]
-    if not isinstance(unit, dict):
-        return []
-    about = unit.get("about", "")
-    if not about or not about.strip():
-        return []
-    import re
-    if len(qs_units) > 1:
-        names = []
-        for u in qs_units:
-            name = u.get("name", "") or u.get("title", "") or u.get("text", "")
-            if name.strip():
-                names.append(name.strip())
-        if names:
-            return names
-    parts = re.split(r'(?<!\()\s*(\d{2,3}(?:/\d{1,2})?)\s*', about.strip())
-    dishes = []
-    for i in range(0, len(parts), 2):
-        name = parts[i].strip(' ,.')
-        if name:
-            dishes.append(name)
-    return dishes
-
 
 async def require_authentication(
     message: Message,
@@ -260,9 +192,9 @@ async def cmd_foodtoday(message: Message, user_config: Optional[UserConfig] = No
                 except ValueError:
                     price = 0.0
                 
-                dish_names = _extract_dish_names(visit.get("dishes", []))
+                dish_names = extract_dish_names(visit.get("dishes", []))
                 if not dish_names:
-                    dish_names = _parse_complex_menu(visit.get("qs_unit", []))
+                    dish_names = parse_complex_menu(visit.get("qs_unit", []))
                 
                 if is_confirmed:
                     lines.append(f"✅ <b>{meal_name}</b> — получено")
@@ -369,7 +301,7 @@ async def process_threshold_value(message: Message, state: FSMContext):
         await message.answer("\u274c Настройка отменена.", reply_markup=get_main_keyboard())
         return
 
-    if _is_navigation_command(text):
+    if is_navigation_command(text):
         await state.clear()
         return  # пусть обработает другой handler
 

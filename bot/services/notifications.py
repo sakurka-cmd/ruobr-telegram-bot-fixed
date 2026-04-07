@@ -2,6 +2,7 @@
 Фоновые задачи для уведомлений.
 """
 import asyncio
+import time
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -29,7 +30,7 @@ from . import (
     Child,
     FoodInfo
 )
-from ..utils.formatters import truncate_text
+from ..utils.formatters import truncate_text, extract_dish_names, parse_complex_menu
 
 logger = logging.getLogger(__name__)
 
@@ -85,98 +86,6 @@ def normalize_date(date_str: str) -> str:
     return date_str
 
 
-def extract_dish_names(dishes: Any) -> List[str]:
-    """
-    Извлечение названий блюд из различных форматов данных.
-
-    Args:
-        dishes: Список блюд (может быть списком словарей, списком строк, или None).
-
-    Returns:
-        Список названий блюд.
-    """
-    if not dishes:
-        return []
-
-    if not isinstance(dishes, list):
-        return []
-
-    names = []
-    for dish in dishes:
-        if isinstance(dish, str):
-            if dish.strip():
-                names.append(dish.strip())
-        elif isinstance(dish, dict):
-            # Пробуем разные ключи для названия блюда
-            name = (
-                dish.get("text") or
-                dish.get("name") or
-                dish.get("title") or
-                dish.get("dish_name") or
-                dish.get("description") or
-                ""
-            )
-            if name and str(name).strip():
-                names.append(str(name).strip())
-
-    return names
-
-
-def parse_complex_menu(qs_units: Any) -> List[str]:
-    """
-    Парсинг комплексного меню из qs_unit.
-
-    API возвращает комплексное питание как одну строку в qs_unit[0].about:
-    "Рис отварной 150 Тефтели (1 вариант) соус том. (свинина)60/30 Хлеб ржаной 20"
-
-    Формат: "Название Вес" или "Название Вес1/Вес2", разделены пробелами.
-    Числа внутри скобок (как "(1 вариант)") — это не веса, а часть названия.
-
-    Args:
-        qs_units: Список qs_unit из API.
-
-    Returns:
-        Список строк с блюдами.
-    """
-    if not qs_units or not isinstance(qs_units, list) or len(qs_units) == 0:
-        return []
-
-    unit = qs_units[0]
-    if not isinstance(unit, dict):
-        return []
-
-    about = unit.get("about", "")
-    if not about or not about.strip():
-        return []
-
-    import re
-
-    # Способ 1: В qs_unit может быть список блюд (иногда API возвращает структурированные данные)
-    if len(qs_units) > 1:
-        names = []
-        for u in qs_units:
-            name = u.get("name", "") or u.get("title", "") or u.get("text", "")
-            if name.strip():
-                names.append(name.strip())
-        if names:
-            return names
-
-    # Способ 2: Парсим плоскую строку
-    # Разбиваем по весам: 2-3 цифры (опционально /1-2 цифры),
-    # которые НЕ стоят сразу после "(" (чтобы не ломаться на "(1 вариант)")
-    parts = re.split(r'(?<!\()\s*(\d{2,3}(?:/\d{1,2})?)\s*', about.strip())
-
-    dishes = []
-    for i in range(0, len(parts), 2):
-        name = parts[i].strip()
-        # Убираем висящие скобки в начале/конце
-        name = name.strip(' ,.')
-        if name:
-            dishes.append(name)
-
-    return dishes
-
-
 def extract_price(visit: Dict) -> float:
     """
     Извлечение цены из визита с поддержкой разных ключей и форматов.
@@ -224,12 +133,15 @@ class NotificationService:
     Отслеживает изменения баланса и новые оценки.
     """
 
-    MARKS_CHECK_DAYS = 14  # Проверять оценки за последние 14 дней
+    MARKS_CHECK_DAYS = 14
+    BALANCE_FOOD_CHECK_INTERVAL = 1800  # 30 minutes  # Проверять оценки за последние 14 дней
 
     def __init__(self, bot: Bot):
         self._bot = bot
         self._running = False
         self._prev_balances: Dict[int, Dict[int, float]] = {}
+        self._last_balance_check: Dict[int, float] = {}
+        self._last_food_check: Dict[int, float] = {}
         self._first_run = True  # Флаг первого запуска
 
     async def start(self) -> None:
@@ -369,25 +281,40 @@ class NotificationService:
             f"children={len(children)}"
         )
 
-        # Получаем данные о питании один раз для баланса и уведомлений о еде
+        # Получаем данные о питании только если баланс/еда проверяются в этом цикле
+        now = time.time()
+        need_food = False
+        if user.enabled and (now - self._last_balance_check.get(user.chat_id, 0) >= self.BALANCE_FOOD_CHECK_INTERVAL):
+            need_food = True
+        if user.food_enabled and (now - self._last_food_check.get(user.chat_id, 0) >= self.BALANCE_FOOD_CHECK_INTERVAL):
+            need_food = True
+
         food_info: Dict[int, FoodInfo] = {}
-        if user.enabled or user.food_enabled:
+        if need_food:
             try:
                 food_info = await get_food_for_children(login, password, children)
             except Exception as e:
                 logger.error(f"Error fetching food for user {user.chat_id}: {e}")
 
-        # Уведомления о балансе (только когда ниже порога)
+        # Уведомления о балансе (проверка раз в 30 минут)
         if user.enabled:
-            await self._check_balance_notifications(user, children, food_info)
+            now = time.time()
+            last_check = self._last_balance_check.get(user.chat_id, 0)
+            if now - last_check >= self.BALANCE_FOOD_CHECK_INTERVAL:
+                self._last_balance_check[user.chat_id] = now
+                await self._check_balance_notifications(user, children, food_info)
 
         # Уведомления об оценках
         if user.marks_enabled:
             await self._check_marks_notifications(user, children, login, password)
 
-        # Уведомления о питании
+        # Уведомления о питании (проверка раз в 30 минут)
         if user.food_enabled:
-            await self._check_food_notifications(user, children, food_info)
+            now = time.time()
+            last_check = self._last_food_check.get(user.chat_id, 0)
+            if now - last_check >= self.BALANCE_FOOD_CHECK_INTERVAL:
+                self._last_food_check[user.chat_id] = now
+                await self._check_food_notifications(user, children, food_info)
 
         # Уведомления о днях рождения
         if getattr(user, 'birthday_enabled', False):

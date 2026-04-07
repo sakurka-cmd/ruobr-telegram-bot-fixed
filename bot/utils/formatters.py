@@ -2,6 +2,7 @@
 Утилиты для форматирования вывода.
 """
 import re
+import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -302,3 +303,60 @@ def has_meaningful_text(text: str) -> bool:
     
     # Проверяем что есть хоть какой-то текст (минимум 3 символа)
     return len(clean) >= 3
+
+
+def extract_dish_names(dishes) -> list:
+    """
+    Извлечение названий блюд из различных форматов данных.
+    """
+    if not dishes or not isinstance(dishes, list):
+        return []
+    names = []
+    for dish in dishes:
+        if isinstance(dish, str):
+            if dish.strip():
+                names.append(dish.strip())
+        elif isinstance(dish, dict):
+            name = (
+                dish.get("text") or
+                dish.get("name") or
+                dish.get("title") or
+                dish.get("dish_name") or
+                dish.get("description") or
+                ""
+            )
+            if name and str(name).strip():
+                names.append(str(name).strip())
+    return names
+
+
+def parse_complex_menu(qs_units) -> list:
+    """
+    Парсинг комплексного меню из qs_unit.
+    """
+    if not qs_units or not isinstance(qs_units, list) or len(qs_units) == 0:
+        return []
+    unit = qs_units[0]
+    if not isinstance(unit, dict):
+        return []
+    about = unit.get("about", "")
+    if not about or not about.strip():
+        return []
+
+    if len(qs_units) > 1:
+        names = []
+        for u in qs_units:
+            name = u.get("name", "") or u.get("title", "") or u.get("text", "")
+            if name.strip():
+                names.append(name.strip())
+        if names:
+            return names
+
+
+    parts = re.split(r'(?<!\()\s*(\d{2,3}(?:/\d{1,2})?)\s*', about.strip())
+    dishes = []
+    for i in range(0, len(parts), 2):
+        name = parts[i].strip(" ,.")
+        if name:
+            dishes.append(name)
+    return dishes

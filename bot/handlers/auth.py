@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from ..config import config
+from ..utils.common import is_navigation_command
 from ..credentials import safe_decrypt
 from ..database import get_user, create_or_update_user, UserConfig
 from ..states import LoginStates
@@ -18,22 +19,6 @@ from ..services import get_children_async, AuthenticationError, get_classmates_f
 logger = logging.getLogger(__name__)
 
 router = Router()
-
-def _is_navigation_command(text: str) -> bool:
-    """Проверить, является ли текст навигационной командой/кнопкой."""
-    NAV = {
-        "🎂 Дни рождения", "💰 Порог баланса", "🔑 Изменить логин/пароль",
-        "🔔 Уведомления", "👤 Мой профиль", "◀️ Назад",
-        "💰 Баланс питания", "🍽 Питание сегодня", "📅 Расписание сегодня",
-        "📅 Расписание завтра", "📘 ДЗ на завтра", "⭐ Оценки сегодня",
-        "⚙️ Настройки", "ℹ️ Информация", "👥 Одноклассники",
-        "👩‍🏫 Учителя", "🎓 Доп. образование", "📋 Справка",
-        "❌ Отмена", "/cancel", "/start", "/set_login", "/balance",
-        "/ttoday", "/ttomorrow", "/hwtomorrow", "/markstoday", "/foodtoday",
-        "/set_threshold",
-    }
-    return text.strip() in NAV
-
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -129,7 +114,7 @@ async def process_login(message: Message, state: FSMContext):
     text = message.text.strip()
     
     # Навигационные команды — сбрасываем FSM
-    if _is_navigation_command(text):
+    if is_navigation_command(text):
         await state.clear()
         return
     
@@ -161,7 +146,7 @@ async def process_password(message: Message, state: FSMContext):
     password = message.text.strip()
     
     # Навигационные команды — сбрасываем FSM
-    if _is_navigation_command(password):
+    if is_navigation_command(password):
         await state.clear()
         return
     
