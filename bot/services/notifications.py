@@ -26,7 +26,8 @@ from . import (
     get_food_for_children,
     get_timetable_for_children,
     get_classmates_for_child,
-    Child
+    Child,
+    FoodInfo
 )
 from ..utils.formatters import truncate_text
 
@@ -368,9 +369,17 @@ class NotificationService:
             f"children={len(children)}"
         )
 
+        # Получаем данные о питании один раз для баланса и уведомлений о еде
+        food_info: Dict[int, FoodInfo] = {}
+        if user.enabled or user.food_enabled:
+            try:
+                food_info = await get_food_for_children(login, password, children)
+            except Exception as e:
+                logger.error(f"Error fetching food for user {user.chat_id}: {e}")
+
         # Уведомления о балансе (только когда ниже порога)
         if user.enabled:
-            await self._check_balance_notifications(user, children, login, password)
+            await self._check_balance_notifications(user, children, food_info)
 
         # Уведомления об оценках
         if user.marks_enabled:
@@ -378,7 +387,7 @@ class NotificationService:
 
         # Уведомления о питании
         if user.food_enabled:
-            await self._check_food_notifications(user, children, login, password)
+            await self._check_food_notifications(user, children, food_info)
 
         # Уведомления о днях рождения
         if getattr(user, 'birthday_enabled', False):
@@ -388,15 +397,13 @@ class NotificationService:
         self,
         user: UserConfig,
         children: List[Child],
-        login: str,
-        password: str
+        food_info: Dict[int, FoodInfo]
     ) -> None:
         """
         Проверка и отправка уведомлений о балансе.
         Уведомление приходит ТОЛЬКО когда баланс упал ниже порога.
         """
         try:
-            food_info = await get_food_for_children(login, password, children)
             thresholds = await get_all_thresholds_for_chat(user.chat_id)
 
             alerts = []
@@ -505,8 +512,7 @@ class NotificationService:
         self,
         user: UserConfig,
         children: List[Child],
-        login: str,
-        password: str
+        food_info: Dict[int, FoodInfo]
     ) -> None:
         """
         Проверка и отправка уведомлений о питании.
@@ -524,8 +530,6 @@ class NotificationService:
         try:
             today = date.today()
             today_str = today.strftime("%Y-%m-%d")
-
-            food_info = await get_food_for_children(login, password, children)
 
             logger.info(f"Food check for user {user.chat_id}, date={today_str}, children={len(children)}")
 
